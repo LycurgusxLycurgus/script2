@@ -105,10 +105,10 @@ Subject: {{SUBJECT}}
 Details: {{DETAILS}}
 
 INSTRUCTIONS:
-1. Show the step-by-step work clearly.
-2. Explain the logic briefly if the style permits.
-3. Use standard mathematical notation.
-4. If the user's style is messy/casual, the explanation should be casual, but the math must be correct.
+1. Show the step-by-step work clearly using PLAIN TEXT ONLY (No Markdown/LaTeX).
+2. Format strictly: [Step-by-step Math] -> [Separator] -> [Brief Explanation].
+3. Solve like this: Keep steps raw and simple, Direct logic, minimal parentheses, no preambles in text, correct math.
+4. Ensure the explanation matches the user's language and style.
 `,
 
     /**
