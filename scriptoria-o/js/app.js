@@ -100,7 +100,7 @@ const app = createApp({
                 },
                 system_prompt: {
                     type: "string",
-                    description: "The replicating system prompt. A direct instruction to the AI to write in this style, incorporating all principles and 'many-shot' examples."
+                    description: "The replicating system prompt. A direct instruction to the AI to write in this style, incorporating all principles and don's & dont's rules."
                 }
             },
             required: ["style_profile", "system_prompt"]
@@ -187,10 +187,10 @@ const app = createApp({
             return key;
         };
 
-        // 1. Structured Output Call (Non-Streaming for reliability on Schema)
-        const callGeminiStructured = async (userPrompt, schema) => {
+        // 1. Structured Output Call with Streaming (Gemini 2.5 Pro for Style Analysis)
+        const callGeminiStructuredStream = async (userPrompt, schema) => {
             const apiKey = getApiKey();
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`;
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse&key=${apiKey}`;
 
             const payload = {
                 contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
@@ -199,7 +199,11 @@ const app = createApp({
                     responseJsonSchema: schema,
                     temperature: 0.6,
                     topP: 1.0,
-                    maxOutputTokens: 60000
+                    maxOutputTokens: 60000,
+                    thinkingConfig: {
+                        includeThoughts: true,
+                        thinkingBudget: 32000
+                    }
                 }
             };
 
@@ -209,14 +213,50 @@ const app = createApp({
                 body: JSON.stringify(payload)
             });
 
-            if (!response.ok) {
-                const err = await response.json();
-                throw new Error(err.error?.message || 'API Error');
+            if (!response.ok) throw new Error('Stream Error');
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let jsonAccumulator = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop(); // Keep incomplete line
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const jsonStr = line.slice(6);
+                        if (jsonStr === '[DONE]') continue;
+                        try {
+                            const data = JSON.parse(jsonStr);
+                            const parts = data.candidates?.[0]?.content?.parts || [];
+
+                            for (const part of parts) {
+                                if (part.thought) {
+                                    // Append to thought log
+                                    if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
+                                        thoughtLog.value.push({ text: part.text, isThought: true });
+                                    } else {
+                                        thoughtLog.value[thoughtLog.value.length - 1].text += part.text;
+                                    }
+                                } else if (part.text) {
+                                    // Accumulate JSON chunks
+                                    jsonAccumulator += part.text;
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('Parse error', e);
+                        }
+                    }
+                }
             }
 
-            const data = await response.json();
-            const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-            return text ? JSON.parse(text) : null;
+            return jsonAccumulator ? JSON.parse(jsonAccumulator) : null;
         };
 
         // 2. Streaming Call with Thinking
@@ -314,8 +354,8 @@ const app = createApp({
                     .replace('{{HOWTO}}', styleForm.howto)
                     .replace('{{CANCEL}}', styleForm.cancel);
 
-                // Use Structured Output
-                const analysisResult = await callGeminiStructured(prompt, styleAnalysisSchema);
+                // Use Structured Output with Streaming
+                const analysisResult = await callGeminiStructuredStream(prompt, styleAnalysisSchema);
 
                 if (analysisResult) {
                     // Save results

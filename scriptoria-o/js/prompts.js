@@ -58,10 +58,10 @@ A person's writing style is a unique fingerprint composed of conscious choices a
 
 CRITICAL NOTES:
 - In your system prompt output never use sentences/instructions like "with a passion for X or Y thing", instead things like "his writing style is X Y Z", never over-instruct about a certain topic, content, passion or similar.
-- When deconstructing the writing style of the person, not only use the examples, words, phrases, structures that the person uses, infer how this style would translate to many different contexts and contents and make a second section, in addition to the principles section, called many-shot examples for every principle of writing style that you generate, with many examples of how this style would write in different contexts and in different contents.
-- In the human principles nor in the many-shot-examples never put starters for paragraphs, only the principle, giving writing starters make that all the responses from the system prompt and the LLM start the same, and this makes it super obvious that is not a human but a robot writing.
-
+- When deconstructing the writing style of the person, do NOT generate specific writing examples (no "one-shot", "few-shots" nor "many-shots" examples). Instead, create a "Style Constitution" section, as a second section in addition to the principles section, for every principle of writing style that you generate, with the rules/laws of how this style writes so it can be adapted to different contexts and contents. This must be a list of strict "Do's and Don'ts" based on the user's habits. Focus on the logic of their writing (the rules they subconsciously follow), not specific content examples.
+- In the human principles nor in the style constitution never put starters for paragraphs, only the principle, giving writing starters make that all the responses from the system prompt and the LLM start the same, and this makes it super obvious that is not a human but a robot writing.
 NOTE: Your output will be strictly structured by a JSON Schema. Ensure your analysis for the "style_profile" and "system_prompt" fields is exhaustive and detailed.
+NOTE: in the system prompt from the json schema you will have to place the principles of the writing style for every one of the essential and then the rules, the do's and dont's also for each one of the essentials; NEVER put any specific word, content or 'e.g.' examples in any of them, you should put only the principles of the writing style and the logic underlying the style but never concrete examples to avoid overfitting.
 `,
 
     /**
