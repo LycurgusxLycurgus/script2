@@ -10,6 +10,7 @@ const app = createApp({
         const generatedContent = ref('');
         const thoughtLog = ref([]); // For Thinking Stream
         const copyBtnText = ref('Copy');
+        const lastSignature = ref(null);
 
         // --- Data: Auth ---
         const credentials = [
@@ -190,19 +191,19 @@ const app = createApp({
         // 1. Structured Output Call with Streaming (Gemini 2.5 Pro for Style Analysis)
         const callGeminiStructuredStream = async (userPrompt, schema) => {
             const apiKey = getApiKey();
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse&key=${apiKey}`;
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse&key=${apiKey}`;
 
             const payload = {
                 contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
                 generationConfig: {
                     responseMimeType: "application/json",
                     responseJsonSchema: schema,
-                    temperature: 0.6,
+                    temperature: 1.0,
                     topP: 1.0,
                     maxOutputTokens: 60000,
                     thinkingConfig: {
                         includeThoughts: true,
-                        thinkingBudget: 32000
+                        thinkingLevel: "high"
                     }
                 }
             };
@@ -237,6 +238,10 @@ const app = createApp({
                             const parts = data.candidates?.[0]?.content?.parts || [];
 
                             for (const part of parts) {
+                                if (part.thoughtSignature) {
+                                    lastSignature.value = part.thoughtSignature;
+                                }
+
                                 if (part.thought) {
                                     // Append to thought log
                                     if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
@@ -260,31 +265,39 @@ const app = createApp({
         };
 
         // 2. Streaming Call with Thinking
-        const callGeminiStream = async (userPrompt, systemPrompt, files = []) => {
+        const callGeminiStream = async (userPrompt, systemPrompt, files = [], history = null) => {
             const apiKey = getApiKey();
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:streamGenerateContent?alt=sse&key=${apiKey}`;
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse&key=${apiKey}`;
 
-            const contents = [{ role: 'user', parts: [{ text: userPrompt }] }];
+            let contents;
+            if (history) {
+                contents = history;
+            } else {
+                contents = [{ role: 'user', parts: [{ text: userPrompt }] }];
 
-            // Handle Files (Inline)
-            if (files.length > 0) {
-                files.forEach(file => {
-                    const base64Data = file.data.split(',')[1];
-                    const mimeType = file.data.split(';')[0].split(':')[1];
-                    contents[0].parts.push({ inline_data: { mime_type: mimeType, data: base64Data } });
-                });
+                // Handle Files (Inline)
+                if (files.length > 0) {
+                    files.forEach(file => {
+                        const base64Data = file.data.split(',')[1];
+                        const mimeType = file.data.split(';')[0].split(':')[1];
+                        contents[0].parts.push({
+                            inline_data: { mime_type: mimeType, data: base64Data },
+                            media_resolution: "media_resolution_medium"
+                        });
+                    });
+                }
             }
 
             const payload = {
                 contents: contents,
                 system_instruction: { parts: [{ text: systemPrompt }] },
                 generationConfig: {
-                    temperature: 0.6,
+                    temperature: 1.0,
                     topP: 1.0,
                     maxOutputTokens: 60000,
                     thinkingConfig: {
                         includeThoughts: true,
-                        thinkingBudget: 24000
+                        thinkingLevel: "medium"
                     }
                 }
             };
@@ -318,6 +331,10 @@ const app = createApp({
                             const parts = data.candidates?.[0]?.content?.parts || [];
 
                             for (const part of parts) {
+                                if (part.thoughtSignature) {
+                                    lastSignature.value = part.thoughtSignature;
+                                }
+
                                 if (part.thought) {
                                     // Append to thought log
                                     if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
@@ -384,6 +401,7 @@ const app = createApp({
             systemMessage.value = 'The Core is thinking...';
             generatedContent.value = '';
             thoughtLog.value = []; // Reset thoughts
+            lastSignature.value = null; // Reset signature for new generation
 
             try {
                 const styleProfile = localStorage.getItem('scriptoria_style_profile') || 'Standard academic tone.';
@@ -425,8 +443,18 @@ const app = createApp({
                     .replace('{{STYLE_PROFILE}}', styleProfile)
                     .replace('{{CONTENT}}', originalContent);
 
+                // Construct history for continuity if signature exists
+                let history = null;
+                if (lastSignature.value) {
+                    history = [
+                        { role: 'user', parts: [{ text: homeworkForm.topic }] }, // Simulate previous turn
+                        { role: 'model', parts: [{ text: originalContent, thoughtSignature: lastSignature.value }] },
+                        { role: 'user', parts: [{ text: prompt }] }
+                    ];
+                }
+
                 // Use Streaming
-                await callGeminiStream(prompt, "You are a professional editor.", []);
+                await callGeminiStream(prompt, "You are a professional editor.", [], history);
 
                 // Update history with new version
                 addToHistory(homeworkForm.topic, true);
@@ -447,6 +475,7 @@ const app = createApp({
                 taskType: homeworkForm.taskType,
                 details: homeworkForm.details,
                 content: generatedContent.value, // Save content
+                signature: lastSignature.value, // Save signature
                 timestamp: new Date().toLocaleDateString()
             };
             history.value.unshift(newItem);
@@ -470,6 +499,7 @@ const app = createApp({
             // Load the saved content if it exists
             if (item.content) {
                 generatedContent.value = item.content;
+                lastSignature.value = item.signature || null;
                 appState.value = 'RESULT';
             }
 
@@ -564,7 +594,8 @@ const app = createApp({
             generateHomework,
             humanizeContent,
             loadHistoryItem,
-            copyToClipboard
+            copyToClipboard,
+            lastSignature
         };
     }
 });

@@ -62,6 +62,7 @@ CRITICAL NOTES:
 - In the human principles nor in the style constitution never put starters for paragraphs, only the principle, giving writing starters make that all the responses from the system prompt and the LLM start the same, and this makes it super obvious that is not a human but a robot writing.
 NOTE: Your output will be strictly structured by a JSON Schema. Ensure your analysis for the "style_profile" and "system_prompt" fields is exhaustive and detailed.
 NOTE: in the system prompt from the json schema you will have to place the principles of the writing style for every one of the essential and then the rules, the do's and dont's also for each one of the essentials; NEVER put any specific word, content or 'e.g.' examples in any of them, you should put only the principles of the writing style and the logic underlying the style but never concrete examples to avoid overfitting.
+- Make your analaysis in the same language as the user.
 `,
 
     /**
