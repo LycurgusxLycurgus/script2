@@ -245,9 +245,9 @@ const app = createApp({
                                 if (part.thought) {
                                     // Append to thought log
                                     if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
-                                        thoughtLog.value.push({ text: part.thought, isThought: true });
+                                        thoughtLog.value.push({ text: part.text, isThought: true });
                                     } else {
-                                        thoughtLog.value[thoughtLog.value.length - 1].text += part.thought;
+                                        thoughtLog.value[thoughtLog.value.length - 1].text += part.text;
                                     }
                                 } else if (part.text) {
                                     // Accumulate JSON chunks
@@ -337,9 +337,9 @@ const app = createApp({
                                 if (part.thought) {
                                     // Append to thought log
                                     if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
-                                        thoughtLog.value.push({ text: part.thought, isThought: true });
+                                        thoughtLog.value.push({ text: part.text, isThought: true });
                                     } else {
-                                        thoughtLog.value[thoughtLog.value.length - 1].text += part.thought;
+                                        thoughtLog.value[thoughtLog.value.length - 1].text += part.text;
                                     }
                                 } else if (part.text) {
                                     // Real content
@@ -416,12 +416,14 @@ const app = createApp({
                 // Use Streaming with Thinking
                 await callGeminiStream(userPrompt, systemPrompt, homeworkForm.files);
 
+                // Add to history only if successful
+                addToHistory(homeworkForm.topic);
+                appState.value = 'RESULT';
+
+                // Render math after DOM is updated with new state
                 if (homeworkType.value === 'math') {
                     renderMath();
                 }
-
-                // Add to history only if successful
-                addToHistory(homeworkForm.topic);
                 appState.value = 'RESULT';
 
             } catch (e) {
@@ -459,12 +461,14 @@ const app = createApp({
                 // Use Streaming
                 await callGeminiStream(prompt, "You are a professional editor.", [], history);
 
+                // Update history with new version
+                addToHistory(homeworkForm.topic, true);
+                appState.value = 'RESULT';
+
+                // Render math after DOM is updated
                 if (homeworkType.value === 'math') {
                     renderMath();
                 }
-
-                // Update history with new version
-                addToHistory(homeworkForm.topic, true);
                 appState.value = 'RESULT';
 
             } catch (e) {
@@ -510,7 +514,7 @@ const app = createApp({
                 appState.value = 'RESULT';
 
                 if (homeworkType.value === 'math') {
-                    nextTick(() => renderMath());
+                    renderMath();
                 }
             }
 
@@ -519,18 +523,36 @@ const app = createApp({
 
         const renderMath = () => {
             nextTick(() => {
-                if (window.renderMathInElement && generatedContent.value) {
-                    const element = document.querySelector('.prose');
-                    if (element) {
-                        renderMathInElement(element, {
-                            delimiters: [
-                                {left: '$$', right: '$$', display: true},
-                                {left: '$', right: '$', display: false}
-                            ],
-                            throwOnError: false
-                        });
-                    }
+                if (!window.katex) {
+                    console.warn('KaTeX not loaded');
+                    return;
                 }
+
+                setTimeout(() => {
+                    const mathElement = document.getElementById('math-output');
+                    if (!mathElement) return;
+
+                    const rawContent = generatedContent.value;
+                    let renderedContent = rawContent;
+
+                    renderedContent = renderedContent.replace(/\$\$([^$]+)\$\$/g, (match, latex) => {
+                        try {
+                            return katex.renderToString(latex, { displayMode: true, throwOnError: false });
+                        } catch (e) {
+                            return match;
+                        }
+                    });
+
+                    renderedContent = renderedContent.replace(/\$([^$]+)\$/g, (match, latex) => {
+                        try {
+                            return katex.renderToString(latex, { displayMode: false, throwOnError: false });
+                        } catch (e) {
+                            return match;
+                        }
+                    });
+
+                    generatedContent.value = renderedContent;
+                }, 100);
             });
         };
 
