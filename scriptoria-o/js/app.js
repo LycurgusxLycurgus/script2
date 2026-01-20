@@ -523,36 +523,21 @@ const app = createApp({
 
         const renderMath = () => {
             nextTick(() => {
-                if (!window.katex) {
-                    console.warn('KaTeX not loaded');
-                    return;
+                const mathElement = document.getElementById('math-output');
+
+                if (mathElement && window.renderMathInElement) {
+                    window.renderMathInElement(mathElement, {
+                        delimiters: [
+                            {left: '$$', right: '$$', display: true},
+                            {left: '$', right: '$', display: false},
+                            {left: '\\(', right: '\\)', display: false},
+                            {left: '\\[', right: '\\]', display: true}
+                        ],
+                        throwOnError: false
+                    });
+                } else {
+                    console.warn('Math container not found or KaTeX auto-render missing.');
                 }
-
-                setTimeout(() => {
-                    const mathElement = document.getElementById('math-output');
-                    if (!mathElement) return;
-
-                    const rawContent = generatedContent.value;
-                    let renderedContent = rawContent;
-
-                    renderedContent = renderedContent.replace(/\$\$([^$]+)\$\$/g, (match, latex) => {
-                        try {
-                            return katex.renderToString(latex, { displayMode: true, throwOnError: false });
-                        } catch (e) {
-                            return match;
-                        }
-                    });
-
-                    renderedContent = renderedContent.replace(/\$([^$]+)\$/g, (match, latex) => {
-                        try {
-                            return katex.renderToString(latex, { displayMode: false, throwOnError: false });
-                        } catch (e) {
-                            return match;
-                        }
-                    });
-
-                    generatedContent.value = renderedContent;
-                }, 100);
             });
         };
 
