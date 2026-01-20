@@ -1,4 +1,4 @@
-const { createApp, ref, reactive, computed, onMounted } = Vue;
+const { createApp, ref, reactive, computed, onMounted, nextTick } = Vue;
 
 const app = createApp({
     setup() {
@@ -245,9 +245,9 @@ const app = createApp({
                                 if (part.thought) {
                                     // Append to thought log
                                     if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
-                                        thoughtLog.value.push({ text: part.text, isThought: true });
+                                        thoughtLog.value.push({ text: part.thought, isThought: true });
                                     } else {
-                                        thoughtLog.value[thoughtLog.value.length - 1].text += part.text;
+                                        thoughtLog.value[thoughtLog.value.length - 1].text += part.thought;
                                     }
                                 } else if (part.text) {
                                     // Accumulate JSON chunks
@@ -281,8 +281,7 @@ const app = createApp({
                         const base64Data = file.data.split(',')[1];
                         const mimeType = file.data.split(';')[0].split(':')[1];
                         contents[0].parts.push({
-                            inline_data: { mime_type: mimeType, data: base64Data },
-                            media_resolution: "media_resolution_medium"
+                            inline_data: { mime_type: mimeType, data: base64Data }
                         });
                     });
                 }
@@ -338,9 +337,9 @@ const app = createApp({
                                 if (part.thought) {
                                     // Append to thought log
                                     if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
-                                        thoughtLog.value.push({ text: part.text, isThought: true });
+                                        thoughtLog.value.push({ text: part.thought, isThought: true });
                                     } else {
-                                        thoughtLog.value[thoughtLog.value.length - 1].text += part.text;
+                                        thoughtLog.value[thoughtLog.value.length - 1].text += part.thought;
                                     }
                                 } else if (part.text) {
                                     // Real content
@@ -417,6 +416,10 @@ const app = createApp({
                 // Use Streaming with Thinking
                 await callGeminiStream(userPrompt, systemPrompt, homeworkForm.files);
 
+                if (homeworkType.value === 'math') {
+                    renderMath();
+                }
+
                 // Add to history only if successful
                 addToHistory(homeworkForm.topic);
                 appState.value = 'RESULT';
@@ -455,6 +458,10 @@ const app = createApp({
 
                 // Use Streaming
                 await callGeminiStream(prompt, "You are a professional editor.", [], history);
+
+                if (homeworkType.value === 'math') {
+                    renderMath();
+                }
 
                 // Update history with new version
                 addToHistory(homeworkForm.topic, true);
@@ -501,9 +508,30 @@ const app = createApp({
                 generatedContent.value = item.content;
                 lastSignature.value = item.signature || null;
                 appState.value = 'RESULT';
+
+                if (homeworkType.value === 'math') {
+                    nextTick(() => renderMath());
+                }
             }
 
             if (window.innerWidth < 768) isSidebarOpen.value = false; // Close sidebar on mobile
+        };
+
+        const renderMath = () => {
+            nextTick(() => {
+                if (window.renderMathInElement && generatedContent.value) {
+                    const element = document.querySelector('.prose');
+                    if (element) {
+                        renderMathInElement(element, {
+                            delimiters: [
+                                {left: '$$', right: '$$', display: true},
+                                {left: '$', right: '$', display: false}
+                            ],
+                            throwOnError: false
+                        });
+                    }
+                }
+            });
         };
 
         const copyToClipboard = async () => {
@@ -595,7 +623,8 @@ const app = createApp({
             humanizeContent,
             loadHistoryItem,
             copyToClipboard,
-            lastSignature
+            lastSignature,
+            renderMath
         };
     }
 });

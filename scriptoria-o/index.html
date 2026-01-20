@@ -16,6 +16,11 @@
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
 
+    <!-- KaTeX -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+
     <!-- Custom Styles -->
     <link rel="stylesheet" href="css/styles.css">
 
@@ -355,8 +360,8 @@
                         <div class="flex-1 overflow-y-auto p-8 custom-scrollbar">
                             <div class="prose prose-invert max-w-none">
                                 <div v-if="homeworkType === 'math'"
-                                    class="font-mono text-sm whitespace-pre-wrap text-gray-300">
-                                    {{ generatedContent }}
+                                     class="text-gray-200 leading-relaxed font-inter">
+                                     <div v-html="generatedContent"></div>
                                 </div>
                                 <div v-else class="whitespace-pre-wrap text-gray-200 leading-relaxed font-inter">
                                     {{ generatedContent }}

@@ -106,7 +106,7 @@ Subject: {{SUBJECT}}
 Details: {{DETAILS}}
 
 INSTRUCTIONS:
-1. Show the step-by-step work clearly using PLAIN TEXT ONLY (No Markdown/LaTeX).
+1. Show the step-by-step work clearly using PLAIN TEXT & LATEX ONLY (No Markdown; single $ dollar sign for inline math and double $$ dollar sign for block math).
 2. Format strictly: [Step-by-step Math] -> [Separator] -> [Brief Explanation].
 3. Solve like this: Keep steps raw and simple, Direct logic, minimal parentheses, no preambles in text, correct math.
 4. Ensure the explanation matches the user's language and style.
