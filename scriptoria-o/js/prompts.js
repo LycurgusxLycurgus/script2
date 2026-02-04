@@ -97,6 +97,7 @@ Subject: {{SUBJECT}}
 Context/Details: {{DETAILS}}
 
 Output the result directly. No preamble.
+NOTE: If user asks for a multiturn task, only output the final text always, never output a preparatory turn as this app doesn't have multi-turn nor chat option for the user.
 `,
 
     HOMEWORK_MATH: `
