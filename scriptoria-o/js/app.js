@@ -1,9 +1,9 @@
-const { createApp, ref, reactive, computed, onMounted, nextTick } = Vue;
+const { createApp, ref, reactive, computed, onMounted, nextTick, watch } = Vue;
 
 const app = createApp({
     setup() {
         // --- State ---
-        const appState = ref('INIT'); // INIT, LOGIN, SETUP_KEY, SETUP_STYLE, DASHBOARD, GENERATING, RESULT
+        const appState = ref('INIT'); // INIT, LOGIN, SETUP_KEY, SETUP_STYLE, STYLE_REVIEW, DASHBOARD, GENERATING, RESULT
         const systemMessage = ref('Initializing Obsidian Core...');
         const errorMsg = ref('');
         const isShake = ref(false);
@@ -34,42 +34,152 @@ const app = createApp({
             cancel: ''
         });
 
-        const questions = [
+        const questionBank = [
             {
                 id: 'vibe',
                 label: 'The "Vibe" Check',
-                question: 'Describe the room you\'re in right now.',
-                subtitle: 'Don\'t just list objects—describe what it feels like to be there.',
-                placeholder: 'Write 4-5 lines naturally, as if texting a friend...',
-                model: 'vibe'
+                model: 'vibe',
+                questionPool: [
+                    'Describe the room you\'re in right now.',
+                    'Paint the space around you as if we are standing there.',
+                    'What does your current environment feel like from your point of view?'
+                ],
+                subtitlePool: [
+                    'Don\'t just list objects-describe what it feels like to be there.',
+                    'Use atmosphere, not inventory. Let us feel the place.',
+                    'Focus on mood, texture, and your personal lens.'
+                ],
+                placeholderPool: [
+                    'Write 4-5 lines naturally, as if texting a friend...',
+                    'Give 4-5 lines that sound exactly like your normal voice...',
+                    'Write a short paragraph in your everyday tone...'
+                ]
             },
             {
                 id: 'argument',
                 label: 'The Silly Argument',
-                question: 'Pick a playful opinion and defend it.',
-                subtitle: 'e.g., "Hot dogs are sandwiches" or "Winter > Summer"',
-                placeholder: 'Explain why you\'re right in 4-5 lines...',
-                model: 'argument'
+                model: 'argument',
+                questionPool: [
+                    'Pick a playful opinion and defend it.',
+                    'Choose a harmless hot take and argue for it.',
+                    'Take a fun debate side and convince us you\'re right.'
+                ],
+                subtitlePool: [
+                    'Choose any light topic and make your case clearly.',
+                    'The point is your persuasive style, not being objectively correct.',
+                    'Show your argument voice in a low-stakes opinion.'
+                ],
+                placeholderPool: [
+                    'Explain why you\'re right in 4-5 lines...',
+                    'Write 4-5 lines of your most convincing reasoning...',
+                    'Defend your take in a short paragraph...'
+                ]
             },
             {
                 id: 'howto',
                 label: 'The Quick How-To',
-                question: 'Explain something simple to a beginner.',
-                subtitle: 'Like making cereal, tying shoes, or posting on Instagram.',
-                placeholder: 'Write clear instructions in 4-5 lines...',
-                model: 'howto'
+                model: 'howto',
+                questionPool: [
+                    'Explain something simple to a beginner.',
+                    'Teach a tiny everyday skill to someone new.',
+                    'Give beginner instructions for a simple task.'
+                ],
+                subtitlePool: [
+                    'Break it down in clear steps without sounding robotic.',
+                    'Keep it practical and easy to follow.',
+                    'Aim for clarity while keeping your natural tone.'
+                ],
+                placeholderPool: [
+                    'Write clear instructions in 4-5 lines...',
+                    'Give a short step-by-step in your own voice...',
+                    'Write a brief how-to paragraph...'
+                ]
             },
             {
                 id: 'cancel',
                 label: 'The "I Can\'t Make It" Message',
-                question: 'You have to cancel plans last minute.',
-                subtitle: 'Write the text you\'d send. Be honest—excuse, apologize, or direct?',
-                placeholder: 'Write your message in 4-5 lines...',
-                model: 'cancel'
+                model: 'cancel',
+                questionPool: [
+                    'You have to cancel plans last minute.',
+                    'Send a quick message because you cannot make it anymore.',
+                    'Write the text you would send when canceling on short notice.'
+                ],
+                subtitlePool: [
+                    'Write it exactly how you would actually text.',
+                    'Be honest-awkward, polite, brief, or direct, your real style.',
+                    'Show your natural social tone under pressure.'
+                ],
+                placeholderPool: [
+                    'Write your message in 4-5 lines...',
+                    'Type the exact message you would send...',
+                    'Write a realistic cancellation text in your voice...'
+                ]
             }
         ];
 
-        const currentQuestion = computed(() => questions[interviewStep.value]);
+        const pickRandom = (items) => items[Math.floor(Math.random() * items.length)];
+        const buildInterviewQuestions = () => questionBank.map((entry) => ({
+            id: entry.id,
+            label: entry.label,
+            model: entry.model,
+            question: pickRandom(entry.questionPool),
+            subtitle: pickRandom(entry.subtitlePool),
+            placeholder: pickRandom(entry.placeholderPool)
+        }));
+        const questions = ref(buildInterviewQuestions());
+
+        const currentQuestion = computed(() => questions.value[interviewStep.value] || questions.value[0]);
+
+        const refreshInterviewQuestions = () => {
+            questions.value = buildInterviewQuestions();
+            interviewStep.value = 0;
+        };
+
+        const resetStyleForm = () => {
+            styleForm.vibe = '';
+            styleForm.argument = '';
+            styleForm.howto = '';
+            styleForm.cancel = '';
+        };
+
+        const styleValidationCases = [
+            {
+                id: 'text_preview',
+                type: 'text',
+                label: 'Text Homework Preview',
+                topic: 'Do school uniforms improve student outcomes?',
+                subject: 'Education',
+                taskType: 'Argumentative Response',
+                details: 'Take one clear position, include one counterargument, and end with a practical conclusion.'
+            },
+            {
+                id: 'math_preview',
+                type: 'math',
+                label: 'Math Homework Preview',
+                topic: 'Quadratic equation and interpretation',
+                subject: 'Algebra',
+                taskType: 'Solve and Explain',
+                details: 'Solve a quadratic step-by-step and explain what each solution means in context.'
+            }
+        ];
+
+        const styleReview = reactive({
+            activePreviewId: styleValidationCases[0].id,
+            previews: {
+                text_preview: '',
+                math_preview: ''
+            },
+            isPreparing: false,
+            error: ''
+        });
+
+        const activeStylePreview = computed(() => {
+            return styleValidationCases.find((preview) => preview.id === styleReview.activePreviewId) || styleValidationCases[0];
+        });
+
+        const activeStylePreviewContent = computed(() => {
+            return styleReview.previews[styleReview.activePreviewId] || '';
+        });
 
         // --- Data: Dashboard ---
         const homeworkType = ref('text'); // 'text' or 'math'
@@ -167,7 +277,7 @@ const app = createApp({
                 return;
             }
 
-            if (interviewStep.value < questions.length - 1) {
+            if (interviewStep.value < questions.value.length - 1) {
                 interviewStep.value++;
             } else {
                 finishStyleSetup();
@@ -178,6 +288,60 @@ const app = createApp({
             if (interviewStep.value > 0) {
                 interviewStep.value--;
             }
+        };
+
+        const buildPreviewUserPrompt = (previewCase) => {
+            const userPromptTemplate = previewCase.type === 'math' ? PROMPTS.HOMEWORK_MATH : PROMPTS.HOMEWORK_TEXT;
+            return userPromptTemplate
+                .replace('{{TASK_TYPE}}', previewCase.taskType || 'General Task')
+                .replace('{{TOPIC}}', previewCase.topic)
+                .replace('{{SUBJECT}}', previewCase.subject || 'General')
+                .replace('{{DETAILS}}', previewCase.details || 'None');
+        };
+
+        const prepareStyleValidationPreviews = async () => {
+            const styleProfile = localStorage.getItem('scriptoria_style_profile') || 'Standard academic tone.';
+            const systemPrompt = PROMPTS.SYSTEM.replace('{{STYLE_PROFILE}}', styleProfile);
+
+            styleReview.previews.text_preview = '';
+            styleReview.previews.math_preview = '';
+            styleReview.activePreviewId = styleValidationCases[0].id;
+            styleReview.error = '';
+            styleReview.isPreparing = true;
+
+            for (let index = 0; index < styleValidationCases.length; index++) {
+                const previewCase = styleValidationCases[index];
+                generatedContent.value = '';
+                thoughtLog.value = [];
+                systemMessage.value = `Generating validation previews (${index + 1}/${styleValidationCases.length})...`;
+                const userPrompt = buildPreviewUserPrompt(previewCase);
+                await callGeminiStream(userPrompt, systemPrompt, []);
+                styleReview.previews[previewCase.id] = generatedContent.value;
+            }
+
+            styleReview.isPreparing = false;
+            appState.value = 'STYLE_REVIEW';
+        };
+
+        const selectStylePreview = (previewId) => {
+            if (!styleReview.previews[previewId]) return;
+            styleReview.activePreviewId = previewId;
+        };
+
+        const acceptStyleAndContinue = () => {
+            appState.value = 'DASHBOARD';
+            loadHistory();
+        };
+
+        const retryStyleTraining = () => {
+            styleReview.previews.text_preview = '';
+            styleReview.previews.math_preview = '';
+            styleReview.activePreviewId = styleValidationCases[0].id;
+            styleReview.isPreparing = false;
+            styleReview.error = '';
+            resetStyleForm();
+            refreshInterviewQuestions();
+            appState.value = 'SETUP_STYLE';
         };
 
         // --- API Helpers ---
@@ -378,14 +542,15 @@ const app = createApp({
                     localStorage.setItem('scriptoria_style_analysis', JSON.stringify(analysisResult.style_profile));
                     localStorage.setItem('scriptoria_style_profile', analysisResult.system_prompt);
 
-                    appState.value = 'DASHBOARD';
-                    loadHistory();
+                    systemMessage.value = 'Generating validation previews...';
+                    await prepareStyleValidationPreviews();
                 } else {
                     throw new Error('Failed to generate style profile');
                 }
             } catch (e) {
                 console.error(e);
                 alert('Connection Severed. Please check your API Key and try again.');
+                styleReview.isPreparing = false;
                 appState.value = 'SETUP_STYLE'; // Go back
             }
         };
@@ -545,6 +710,26 @@ const app = createApp({
             });
         };
 
+        const renderStyleReviewMath = () => {
+            nextTick(() => {
+                setTimeout(() => {
+                    const mathElement = document.getElementById('style-review-math-output');
+
+                    if (mathElement && window.renderMathInElement) {
+                        window.renderMathInElement(mathElement, {
+                            delimiters: [
+                                {left: '$$', right: '$$', display: true},
+                                {left: '$', right: '$', display: false},
+                                {left: '\\(', right: '\\)', display: false},
+                                {left: '\\[', right: '\\]', display: true}
+                            ],
+                            throwOnError: false
+                        });
+                    }
+                }, 150);
+            });
+        };
+
         const copyToClipboard = async () => {
             try {
                 await navigator.clipboard.writeText(generatedContent.value);
@@ -584,7 +769,6 @@ const app = createApp({
         const thoughtLogContainer = ref(null);
 
         // Auto-scroll thought log whenever it updates
-        const { watch, nextTick } = Vue;
         watch(thoughtLog, () => {
             nextTick(() => {
                 if (thoughtLogContainer.value) {
@@ -592,6 +776,12 @@ const app = createApp({
                 }
             });
         }, { deep: true });
+
+        watch([appState, () => styleReview.activePreviewId, activeStylePreviewContent], () => {
+            if (appState.value === 'STYLE_REVIEW' && activeStylePreview.value.type === 'math' && activeStylePreviewContent.value) {
+                renderStyleReviewMath();
+            }
+        });
 
         // --- Lifecycle ---
         onMounted(() => {
@@ -619,8 +809,15 @@ const app = createApp({
             styleForm,
             questions,
             currentQuestion,
+            styleValidationCases,
+            styleReview,
+            activeStylePreview,
+            activeStylePreviewContent,
             nextStep,
             prevStep,
+            selectStylePreview,
+            acceptStyleAndContinue,
+            retryStyleTraining,
             // Dashboard
             homeworkType,
             homeworkForm,

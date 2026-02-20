@@ -183,6 +183,51 @@
                         </div>
                     </div>
 
+                    <!-- STYLE_REVIEW State -->
+                    <div v-else-if="appState === 'STYLE_REVIEW'" key="style_review"
+                        class="flex-1 overflow-y-auto custom-scrollbar p-6 md:p-8">
+                        <div class="max-w-4xl mx-auto space-y-6">
+                            <div class="text-center">
+                                <p class="text-xs text-gold uppercase tracking-widest mb-2">Style Validation</p>
+                                <h2 class="text-2xl text-white font-cinzel mb-2">Review Training</h2>
+                                <p class="text-xs text-secondary">Two outputs with your trained style have been created.
+                                    Check them below and choose to accept style and continue or retrain.</p>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <button v-for="previewCase in styleValidationCases" :key="previewCase.id" type="button"
+                                    @click="selectStylePreview(previewCase.id)"
+                                    class="text-left p-4 rounded-lg border transition-all duration-200"
+                                    :class="styleReview.activePreviewId === previewCase.id ? 'border-gold/70 bg-gold/10' : 'border-white/10 bg-black/20 hover:border-gold/30'">
+                                    <p class="text-[10px] uppercase tracking-widest text-gold mb-1">{{ previewCase.type }} preview</p>
+                                    <p class="text-sm text-white">{{ previewCase.topic }}</p>
+                                    <p class="text-xs text-secondary mt-1">{{ previewCase.subject }} • {{ previewCase.taskType }}</p>
+                                </button>
+                            </div>
+
+                            <div class="p-4 rounded-lg border border-white/10 bg-black/30 min-h-[240px]">
+                                <p class="text-xs text-gold uppercase tracking-widest mb-3">Style Output Preview</p>
+                                <p v-if="styleReview.isPreparing" class="text-secondary text-sm">Generating validation previews...</p>
+                                <p v-else-if="styleReview.error" class="text-error text-sm">{{ styleReview.error }}</p>
+                                <div v-else>
+                                    <p class="text-xs text-secondary mb-2">{{ activeStylePreview.details }}</p>
+                                    <div v-if="activeStylePreview.type === 'math'" id="style-review-math-output"
+                                        class="text-gray-200 leading-relaxed font-inter">{{ activeStylePreviewContent }}</div>
+                                    <pre v-else class="whitespace-pre-wrap text-sm text-gray-200 leading-relaxed font-inter">{{ activeStylePreviewContent }}</pre>
+                                </div>
+                            </div>
+
+                            <div class="flex flex-col md:flex-row gap-3 md:justify-end">
+                                <button type="button" @click="retryStyleTraining" class="status-btn w-full md:w-auto">
+                                    Retrain with New Answers
+                                </button>
+                                <button type="button" @click="acceptStyleAndContinue" class="status-btn primary w-full md:w-auto">
+                                    Accept Style & Continue
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- DASHBOARD State -->
                     <div v-else-if="appState === 'DASHBOARD'" key="dashboard" class="flex-1 dashboard-container">
 

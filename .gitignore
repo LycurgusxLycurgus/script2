@@ -6,3 +6,10 @@ PROJECT_CANON.md
 scriptoria-o/VERIFICATION.md
 agents.txt
 prompt.txt
+
+
+#opencode
+
+scriptoria-o/.opencode/
+scriptoria-o/agents.md
+scriptoria-o/agents
