@@ -96,6 +96,12 @@
                                         class="ghost-input">
                                 </div>
 
+                                <label class="terms-check">
+                                    <input v-model="form.acceptTerms" type="checkbox">
+                                    <span>I agree to the <button type="button" @click.stop="openTermsModal"
+                                            class="terms-inline-link">Terms and Conditions</button></span>
+                                </label>
+
                                 <div v-if="errorMsg" class="text-error text-xs text-center">{{ errorMsg }}</div>
 
                                 <button type="submit"
@@ -108,6 +114,12 @@
                                     </svg>
                                 </button>
                             </form>
+
+                            <div class="login-terms-hint">
+                                <button type="button" @click="openTermsModal" class="terms-trigger">
+                                    View terms and conditions
+                                </button>
+                            </div>
                         </div>
                     </div>
 
@@ -440,6 +452,92 @@
                 </p>
             </footer>
 
+            <div v-if="isTermsModalOpen" class="terms-modal-backdrop" @click.self="closeTermsModal">
+                <div class="terms-modal" role="dialog" aria-modal="true" aria-labelledby="terms-title">
+                    <div class="terms-modal-header">
+                        <div>
+                            <p class="terms-kicker">Legal</p>
+                            <h2 id="terms-title" class="terms-title">Terms and Conditions</h2>
+                        </div>
+                        <button type="button" @click="closeTermsModal" class="terms-close-btn"
+                            aria-label="Close terms and conditions">
+                            &times;
+                        </button>
+                    </div>
+
+                    <div class="terms-modal-body">
+                        <p>These Terms and Conditions govern access to and use of Scriptoria. By signing in or
+                            otherwise using this application, you acknowledge that you have read, understood, and
+                            agreed to be bound by these terms. If you do not agree with any part of these terms, you
+                            must not access or use the application.</p>
+                        <p>Scriptoria is provided as a private digital workspace intended to support drafting,
+                            educational assistance, structured writing, and content generation workflows. Access is
+                            limited to authorized users only. You represent and warrant that your use of the
+                            application is permitted by the administrator or owner of this environment and that all
+                            information submitted by you during login or usage is accurate.</p>
+                        <p>You remain solely responsible for all prompts, files, instructions, credentials, and other
+                            materials you provide to the application, as well as for all content generated, refined, or
+                            exported during your session. Scriptoria may assist in producing drafts and formatted
+                            output, but it does not guarantee factual accuracy, completeness, originality, legal
+                            compliance, academic acceptability, or fitness for any specific purpose. All generated
+                            material should be carefully reviewed, edited, and independently verified before being used,
+                            submitted, published, distributed, or relied upon in any academic, professional, legal, or
+                            commercial context.</p>
+                        <p>You agree to use Scriptoria in a lawful, responsible, and ethical manner. Without limiting
+                            the foregoing, you must not use the application to engage in fraud, impersonation,
+                            unauthorized credential sharing, infringement of intellectual property rights, malicious or
+                            harmful conduct, unlawful content creation, deceptive submission practices, or any activity
+                            that violates institutional rules, contractual obligations, or applicable laws and
+                            regulations. You must also ensure that any materials uploaded to the application may be
+                            lawfully processed and do not violate the rights, privacy, or confidentiality of third
+                            parties.</p>
+                        <p>Any credentials issued for this application are personal to the authorized user unless the
+                            administrator expressly permits otherwise. You are responsible for maintaining the
+                            confidentiality of your access credentials and for restricting access to the device or
+                            environment in which this application is used. Any action performed through your access may
+                            be treated as an action taken by you. If you believe your credentials have been exposed,
+                            misused, or compromised, you should stop using the application and notify the administrator
+                            promptly.</p>
+                        <p>Scriptoria may store certain information locally in the browser or device environment,
+                            including but not limited to login-related state, API configuration, usage history, writing
+                            preferences, uploaded context references, and generated outputs. Local storage is used to
+                            support the functioning and continuity of the application experience. You understand that it
+                            is your responsibility to secure the device and browser environment where the application is
+                            operated, including protection against unauthorized access by other users of the same
+                            system.</p>
+                        <p>Where the application relies on external services, including third-party AI or API providers,
+                            portions of your requests, prompts, uploaded context, or generated outputs may be processed
+                            in accordance with the operational behavior of those services. Availability, latency,
+                            quality, and continuity may therefore depend in part on third-party systems that are outside
+                            the direct control of this application. No representation is made that the application will
+                            be uninterrupted, error-free, secure against all threats, or continuously available.</p>
+                        <p>Scriptoria is provided on an “as is” and “as available” basis, without warranties of any
+                            kind, whether express, implied, or statutory, except where such disclaimers are not allowed
+                            by applicable law. To the fullest extent permitted by law, the administrator, owner, and
+                            maintainers of this application disclaim all warranties, including any implied warranties
+                            of merchantability, fitness for a particular purpose, non-infringement, accuracy, and
+                            reliability. Your use of the application is at your own risk.</p>
+                        <p>To the maximum extent permitted by applicable law, the administrator, owner, and maintainers
+                            shall not be liable for any indirect, incidental, consequential, special, punitive, or
+                            exemplary damages, or for any loss of data, opportunity, reputation, academic standing,
+                            business value, or expected results arising from or related to the use of, inability to use,
+                            or reliance upon Scriptoria or any content generated through it. This limitation applies
+                            even if the possibility of such damages has been advised.</p>
+                        <p>Access to Scriptoria may be modified, restricted, suspended, or revoked at any time, with or
+                            without prior notice, for operational, administrative, security, or policy reasons.
+                            Administrators may add, remove, or update users, credentials, features, stored content, or
+                            configuration settings as needed for maintenance or governance purposes. Continued use of
+                            the application after any update to these terms constitutes acceptance of the revised
+                            version.</p>
+                        <p>If any provision of these Terms and Conditions is determined to be invalid or unenforceable,
+                            the remaining provisions shall continue in full force and effect. These terms constitute the
+                            full understanding governing use of this application within its current operating context,
+                            unless supplemented by separate written policies, administrator instructions, or institutional
+                            usage rules that expressly apply.</p>
+                    </div>
+                </div>
+            </div>
+
         </div>
 
     </div>
@@ -449,6 +547,9 @@
 
     <!-- Prompts -->
     <script src="js/prompts.js"></script>
+
+    <!-- Users -->
+    <script src="js/users.js"></script>
 
     <!-- App Logic -->
     <script src="js/app.js"></script>

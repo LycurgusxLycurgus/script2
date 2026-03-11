@@ -13,17 +13,16 @@ const app = createApp({
         const lastSignature = ref(null);
 
         // --- Data: Auth ---
-        const credentials = [
-            { u: 'admin', p: 'scriptoria' },
-            { u: 'scholar', p: '1234' },
-            { u: 'guest', p: 'guest' }
-        ];
+        const credentials = Array.isArray(window.SCRIPTORIA_USERS) ? window.SCRIPTORIA_USERS : [];
 
         const form = reactive({
             username: '',
             password: '',
-            apiKey: ''
+            apiKey: '',
+            acceptTerms: false
         });
+
+        const isTermsModalOpen = ref(false);
 
         // --- Data: Style Interview ---
         const interviewStep = ref(0);
@@ -228,7 +227,21 @@ const app = createApp({
             setTimeout(() => isShake.value = false, 500);
         };
 
+        const openTermsModal = () => {
+            isTermsModalOpen.value = true;
+        };
+
+        const closeTermsModal = () => {
+            isTermsModalOpen.value = false;
+        };
+
         const checkLogin = () => {
+            if (!form.acceptTerms) {
+                errorMsg.value = 'You must accept the Terms and Conditions to continue.';
+                triggerShake();
+                return;
+            }
+
             const valid = credentials.find(c =>
                 c.u.toLowerCase() === form.username.toLowerCase() &&
                 c.p === form.password
@@ -236,6 +249,7 @@ const app = createApp({
 
             if (valid) {
                 errorMsg.value = '';
+                closeTermsModal();
                 const storedKey = localStorage.getItem('scriptoria_api_key');
                 if (storedKey) {
                     checkStyleProfile();
@@ -798,11 +812,14 @@ const app = createApp({
             form,
             errorMsg,
             isShake,
+            isTermsModalOpen,
             generatedContent,
             thoughtLog,
             thoughtLogContainer, // For auto-scroll
             copyBtnText,
             checkLogin,
+            openTermsModal,
+            closeTermsModal,
             saveKey,
             // Style Interview
             interviewStep,
