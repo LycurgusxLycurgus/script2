@@ -1,5 +1,89 @@
 const { createApp, ref, reactive, computed, onMounted, nextTick, watch } = Vue;
 
+const APP_VERSION = '3.0';
+const MAX_DIAGNOSTIC_ENTRIES = 60;
+const SUPPORTED_INLINE_MIME_TYPES = new Set([
+    'application/pdf',
+    'text/plain',
+    'image/png',
+    'image/jpeg',
+    'image/webp',
+    'image/heic',
+    'image/heif'
+]);
+
+const EXTENSION_TO_MIME = {
+    pdf: 'application/pdf',
+    txt: 'text/plain',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+    heic: 'image/heic',
+    heif: 'image/heif'
+};
+
+const generateDiagnosticId = (prefix = 'diag') => {
+    if (window.crypto?.randomUUID) return `${prefix}_${window.crypto.randomUUID()}`;
+    return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+};
+
+const truncateText = (value, max = 600) => {
+    if (typeof value !== 'string') return value;
+    return value.length > max ? `${value.slice(0, max)}...[truncated]` : value;
+};
+
+const redactString = (value) => {
+    if (typeof value !== 'string') return value;
+
+    return value
+        .replace(/([?&]key=)[^&]+/gi, '$1REDACTED')
+        .replace(/AIza[0-9A-Za-z\-_]+/g, 'REDACTED_API_KEY');
+};
+
+const redactMeta = (value, depth = 0) => {
+    if (depth > 4 || value == null) return value;
+    if (typeof value === 'string') return redactString(truncateText(value));
+    if (typeof value !== 'object') return value;
+    if (Array.isArray(value)) return value.map(item => redactMeta(item, depth + 1));
+
+    const safeObject = {};
+    Object.entries(value).forEach(([key, currentValue]) => {
+        if (/key|token|authorization|secret|password/i.test(key)) {
+            safeObject[key] = 'REDACTED';
+        } else if (key === 'data') {
+            safeObject[key] = '[REDACTED_DATA_URL]';
+        } else {
+            safeObject[key] = redactMeta(currentValue, depth + 1);
+        }
+    });
+    return safeObject;
+};
+
+const diagnostics = (() => {
+    const entries = [];
+
+    const push = (level, event, meta = {}) => {
+        const entry = {
+            ts: new Date().toISOString(),
+            level,
+            event,
+            ...redactMeta(meta)
+        };
+
+        entries.push(entry);
+        if (entries.length > MAX_DIAGNOSTIC_ENTRIES) entries.shift();
+        return entry;
+    };
+
+    return {
+        info: (event, meta) => push('info', event, meta),
+        warn: (event, meta) => push('warn', event, meta),
+        error: (event, meta) => push('error', event, meta),
+        getEntries: () => [...entries]
+    };
+})();
+
 const app = createApp({
     setup() {
         // --- State ---
@@ -11,6 +95,7 @@ const app = createApp({
         const thoughtLog = ref([]); // For Thinking Stream
         const copyBtnText = ref('Copy');
         const lastSignature = ref(null);
+        const lastError = ref(null);
 
         // --- Data: Auth ---
         const credentials = Array.isArray(window.SCRIPTORIA_USERS) ? window.SCRIPTORIA_USERS : [];
@@ -191,6 +276,217 @@ const app = createApp({
         });
         const history = ref([]);
         const isSidebarOpen = ref(false);
+
+        const clearLastError = () => {
+            lastError.value = null;
+        };
+
+        const buildRuntimeContext = () => ({
+            appVersion: APP_VERSION,
+            appState: appState.value,
+            homeworkType: homeworkType.value,
+            fileCount: homeworkForm.files.length,
+            files: homeworkForm.files.map(file => ({
+                name: file.name,
+                type: file.mimeType || file.type || 'unknown',
+                size: file.size || null
+            })),
+            hasStyleProfile: !!localStorage.getItem('scriptoria_style_profile'),
+            hasLastSignature: !!lastSignature.value
+        });
+
+        const setUserVisibleError = (error, stage) => {
+            const supportId = generateDiagnosticId('support');
+            const status = error?.status || null;
+            const statusText = error?.statusText || null;
+            const requestId = error?.requestId || null;
+            const responsePreview = error?.responsePreview || null;
+            const baseMessage = error?.message || `Unexpected error during ${stage}.`;
+            const finalMessage = status === 400 && responsePreview
+                ? `Gemini rejected this request. ${responsePreview}`
+                : baseMessage;
+
+            lastError.value = {
+                supportId,
+                stage,
+                message: finalMessage,
+                requestId,
+                status,
+                statusText
+            };
+
+            diagnostics.error('ui.failure', {
+                supportId,
+                stage,
+                message: finalMessage,
+                requestId,
+                status,
+                statusText,
+                responsePreview,
+                runtime: buildRuntimeContext()
+            });
+        };
+
+        const downloadDiagnosticReport = () => {
+            const report = redactMeta({
+                generatedAt: new Date().toISOString(),
+                appVersion: APP_VERSION,
+                browser: {
+                    userAgent: navigator.userAgent,
+                    language: navigator.language,
+                    online: navigator.onLine
+                },
+                lastError: lastError.value,
+                runtime: buildRuntimeContext(),
+                diagnostics: diagnostics.getEntries()
+            });
+
+            const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = `scriptoria-diagnostic-${Date.now()}.json`;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            URL.revokeObjectURL(url);
+        };
+
+        const installGlobalDiagnostics = () => {
+            window.addEventListener('error', (event) => {
+                diagnostics.error('window.error', {
+                    message: event.message,
+                    filename: event.filename,
+                    lineno: event.lineno,
+                    colno: event.colno,
+                    stack: event.error?.stack || null
+                });
+            });
+
+            window.addEventListener('unhandledrejection', (event) => {
+                diagnostics.error('window.unhandledrejection', {
+                    reason: event.reason?.message || String(event.reason),
+                    stack: event.reason?.stack || null
+                });
+            });
+        };
+
+        const getRequestSummary = (payload) => ({
+            hasSystemInstruction: !!payload?.system_instruction,
+            contentCount: Array.isArray(payload?.contents) ? payload.contents.length : 0,
+            filePartCount: Array.isArray(payload?.contents)
+                ? payload.contents.reduce((total, content) => total + (content.parts || []).filter(part => part.inline_data).length, 0)
+                : 0
+        });
+
+        const fetchWithDiagnostics = async (url, payload, context = {}) => {
+            const requestId = generateDiagnosticId('req');
+            const startedAt = performance.now();
+            diagnostics.info('request.start', {
+                requestId,
+                url,
+                context,
+                requestSummary: getRequestSummary(payload)
+            });
+
+            let response;
+            try {
+                response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+            } catch (networkError) {
+                diagnostics.error('request.network_error', {
+                    requestId,
+                    context,
+                    durationMs: Math.round(performance.now() - startedAt),
+                    message: networkError?.message || String(networkError),
+                    stack: networkError?.stack || null
+                });
+
+                const error = new Error('Network request failed.');
+                error.requestId = requestId;
+                throw error;
+            }
+
+            if (!response.ok) {
+                const responseText = await response.text().catch(() => '');
+                const error = new Error(`HTTP ${response.status} ${response.statusText}`);
+                error.requestId = requestId;
+                error.status = response.status;
+                error.statusText = response.statusText;
+                error.responsePreview = truncateText(responseText, 300);
+
+                diagnostics.error('request.http_error', {
+                    requestId,
+                    context,
+                    status: response.status,
+                    statusText: response.statusText,
+                    durationMs: Math.round(performance.now() - startedAt),
+                    responsePreview: responseText
+                });
+
+                throw error;
+            }
+
+            diagnostics.info('request.success', {
+                requestId,
+                context,
+                status: response.status,
+                durationMs: Math.round(performance.now() - startedAt)
+            });
+
+            return { response, requestId };
+        };
+
+        const readSseStream = async (response, onEvent, context = {}) => {
+            const reader = response.body?.getReader();
+            if (!reader) throw new Error('Readable stream not available on response.');
+
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+
+                    const jsonStr = line.slice(6).trim();
+                    if (!jsonStr || jsonStr === '[DONE]') continue;
+
+                    try {
+                        onEvent(JSON.parse(jsonStr));
+                    } catch (parseError) {
+                        diagnostics.warn('sse.parse_error', {
+                            context,
+                            message: parseError?.message || String(parseError),
+                            linePreview: jsonStr
+                        });
+                    }
+                }
+            }
+        };
+
+        const getFileExtension = (fileName = '') => {
+            const parts = fileName.toLowerCase().split('.');
+            return parts.length > 1 ? parts.pop() : '';
+        };
+
+        const resolveSupportedMimeType = (file) => {
+            const declaredType = (file.type || '').toLowerCase();
+            if (declaredType === 'image/jpg') return 'image/jpeg';
+            if (SUPPORTED_INLINE_MIME_TYPES.has(declaredType)) return declaredType;
+
+            const extension = getFileExtension(file.name);
+            return EXTENSION_TO_MIME[extension] || null;
+        };
 
         // --- Schema: Style Analysis ---
         const styleAnalysisSchema = {
@@ -386,60 +682,45 @@ const app = createApp({
                 }
             };
 
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-
-            if (!response.ok) throw new Error('Stream Error');
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
             let jsonAccumulator = '';
 
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
+            const { response, requestId } = await fetchWithDiagnostics(url, payload, {
+                feature: 'style_analysis',
+                streamType: 'structured'
+            });
 
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop(); // Keep incomplete line
+            await readSseStream(response, (data) => {
+                const parts = data.candidates?.[0]?.content?.parts || [];
 
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const jsonStr = line.slice(6);
-                        if (jsonStr === '[DONE]') continue;
-                        try {
-                            const data = JSON.parse(jsonStr);
-                            const parts = data.candidates?.[0]?.content?.parts || [];
+                for (const part of parts) {
+                    if (part.thoughtSignature) {
+                        lastSignature.value = part.thoughtSignature;
+                    }
 
-                            for (const part of parts) {
-                                if (part.thoughtSignature) {
-                                    lastSignature.value = part.thoughtSignature;
-                                }
-
-                                if (part.thought) {
-                                    // Append to thought log
-                                    if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
-                                        thoughtLog.value.push({ text: part.text, isThought: true });
-                                    } else {
-                                        thoughtLog.value[thoughtLog.value.length - 1].text += part.text;
-                                    }
-                                } else if (part.text) {
-                                    // Accumulate JSON chunks
-                                    jsonAccumulator += part.text;
-                                }
-                            }
-                        } catch (e) {
-                            console.warn('Parse error', e);
+                    if (part.thought) {
+                        if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
+                            thoughtLog.value.push({ text: part.text || '', isThought: true });
+                        } else {
+                            thoughtLog.value[thoughtLog.value.length - 1].text += part.text || '';
                         }
+                    } else if (part.text) {
+                        jsonAccumulator += part.text;
                     }
                 }
-            }
+            }, { requestId, feature: 'style_analysis' });
 
-            return jsonAccumulator ? JSON.parse(jsonAccumulator) : null;
+            try {
+                return jsonAccumulator ? JSON.parse(jsonAccumulator) : null;
+            } catch (parseError) {
+                diagnostics.error('structured.json_parse_failed', {
+                    requestId,
+                    message: parseError?.message || String(parseError),
+                    jsonPreview: jsonAccumulator
+                });
+                const error = new Error('Structured response parse failed.');
+                error.requestId = requestId;
+                throw error;
+            }
         };
 
         // 2. Streaming Call with Thinking
@@ -457,9 +738,8 @@ const app = createApp({
                 if (files.length > 0) {
                     files.forEach(file => {
                         const base64Data = file.data.split(',')[1];
-                        const mimeType = file.data.split(';')[0].split(':')[1];
                         contents[0].parts.push({
-                            inline_data: { mime_type: mimeType, data: base64Data }
+                            inline_data: { mime_type: file.mimeType, data: base64Data }
                         });
                     });
                 }
@@ -479,57 +759,37 @@ const app = createApp({
                 }
             };
 
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
+            const { response, requestId } = await fetchWithDiagnostics(url, payload, {
+                feature: history ? 'humanize' : 'homework',
+                streamType: 'text',
+                fileCount: files.length,
+                usingHistory: !!history
             });
 
-            if (!response.ok) throw new Error('Stream Error');
+            await readSseStream(response, (data) => {
+                const parts = data.candidates?.[0]?.content?.parts || [];
 
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
+                for (const part of parts) {
+                    if (part.thoughtSignature) {
+                        lastSignature.value = part.thoughtSignature;
+                    }
 
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop(); // Keep incomplete line
-
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const jsonStr = line.slice(6);
-                        if (jsonStr === '[DONE]') continue;
-                        try {
-                            const data = JSON.parse(jsonStr);
-                            const parts = data.candidates?.[0]?.content?.parts || [];
-
-                            for (const part of parts) {
-                                if (part.thoughtSignature) {
-                                    lastSignature.value = part.thoughtSignature;
-                                }
-
-                                if (part.thought) {
-                                    // Append to thought log
-                                    if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
-                                        thoughtLog.value.push({ text: part.text, isThought: true });
-                                    } else {
-                                        thoughtLog.value[thoughtLog.value.length - 1].text += part.text;
-                                    }
-                                } else if (part.text) {
-                                    // Real content
-                                    generatedContent.value += part.text;
-                                }
-                            }
-                        } catch (e) {
-                            console.warn('Parse error', e);
+                    if (part.thought) {
+                        if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
+                            thoughtLog.value.push({ text: part.text || '', isThought: true });
+                        } else {
+                            thoughtLog.value[thoughtLog.value.length - 1].text += part.text || '';
                         }
+                    } else if (part.text) {
+                        generatedContent.value += part.text;
                     }
                 }
-            }
+            }, {
+                requestId,
+                feature: history ? 'humanize' : 'homework'
+            });
+
+            return requestId;
         };
 
         const finishStyleSetup = async () => {
@@ -540,6 +800,7 @@ const app = createApp({
             appState.value = 'GENERATING';
             systemMessage.value = 'Deconstructing Neural Patterns...';
             thoughtLog.value = [{ text: 'Initializing Style Analysis Protocol...', isThought: true }];
+            clearLastError();
 
             try {
                 const prompt = PROMPTS.STYLE_ANALYSIS
@@ -562,8 +823,11 @@ const app = createApp({
                     throw new Error('Failed to generate style profile');
                 }
             } catch (e) {
-                console.error(e);
-                alert('Connection Severed. Please check your API Key and try again.');
+                diagnostics.error('style_setup.failed', {
+                    message: e?.message || String(e),
+                    requestId: e?.requestId || null
+                });
+                setUserVisibleError(e, 'style setup');
                 styleReview.isPreparing = false;
                 appState.value = 'SETUP_STYLE'; // Go back
             }
@@ -580,6 +844,15 @@ const app = createApp({
             generatedContent.value = '';
             thoughtLog.value = []; // Reset thoughts
             lastSignature.value = null; // Reset signature for new generation
+            clearLastError();
+
+            const unsupportedFiles = homeworkForm.files.filter(file => !file.mimeType || !SUPPORTED_INLINE_MIME_TYPES.has(file.mimeType));
+            if (unsupportedFiles.length > 0) {
+                const error = new Error(`Unsupported file type: ${unsupportedFiles[0].name}. Use PNG, JPG, WEBP, HEIC, HEIF, PDF, or TXT.`);
+                setUserVisibleError(error, 'homework generation');
+                appState.value = 'DASHBOARD';
+                return;
+            }
 
             try {
                 const styleProfile = localStorage.getItem('scriptoria_style_profile') || 'Standard academic tone.';
@@ -606,8 +879,11 @@ const app = createApp({
                 appState.value = 'RESULT';
 
             } catch (e) {
-                console.error(e);
-                alert('Generation Failed: ' + e.message);
+                diagnostics.error('homework_generation.failed', {
+                    message: e?.message || String(e),
+                    requestId: e?.requestId || null
+                });
+                setUserVisibleError(e, 'homework generation');
                 appState.value = 'DASHBOARD';
             }
         };
@@ -620,6 +896,7 @@ const app = createApp({
             systemMessage.value = 'Infusing Human Imperfections...';
             generatedContent.value = '';
             thoughtLog.value = [];
+            clearLastError();
 
             try {
                 const styleProfile = localStorage.getItem('scriptoria_style_profile') || 'Standard academic tone.';
@@ -651,8 +928,11 @@ const app = createApp({
                 appState.value = 'RESULT';
 
             } catch (e) {
-                console.error(e);
-                alert('Humanization Failed: ' + e.message);
+                diagnostics.error('humanize.failed', {
+                    message: e?.message || String(e),
+                    requestId: e?.requestId || null
+                });
+                setUserVisibleError(e, 'humanization');
                 generatedContent.value = originalContent; // Revert
                 appState.value = 'RESULT';
             }
@@ -759,20 +1039,46 @@ const app = createApp({
             if (!files || files.length === 0) return;
 
             Array.from(files).forEach(file => {
+                const mimeType = resolveSupportedMimeType(file);
+                if (!mimeType) {
+                    const error = new Error(`Unsupported file type: ${file.name}. Use PNG, JPG, WEBP, HEIC, HEIF, PDF, or TXT.`);
+                    diagnostics.warn('file.unsupported', {
+                        fileName: file.name,
+                        fileType: file.type || 'unknown'
+                    });
+                    setUserVisibleError(error, 'file upload');
+                    return;
+                }
+
                 const reader = new FileReader();
                 reader.onload = (e) => {
                     homeworkForm.files.push({
                         name: file.name,
                         type: file.type,
+                        mimeType,
+                        size: file.size || null,
                         data: e.target.result // Base64
+                    });
+                    diagnostics.info('file.uploaded', {
+                        fileName: file.name,
+                        mimeType,
+                        size: file.size || null
                     });
                 };
                 reader.readAsDataURL(file);
             });
+
+            if (event.target?.value !== undefined) {
+                event.target.value = '';
+            }
         };
 
         const removeFile = (index) => {
+            const removedFile = homeworkForm.files[index];
             homeworkForm.files.splice(index, 1);
+            diagnostics.info('file.removed', {
+                fileName: removedFile?.name || 'unknown'
+            });
         };
 
         const toggleHomeworkType = (type) => {
@@ -799,6 +1105,10 @@ const app = createApp({
 
         // --- Lifecycle ---
         onMounted(() => {
+            installGlobalDiagnostics();
+            diagnostics.info('app.mounted', {
+                appVersion: APP_VERSION
+            });
             console.log('Scriptoria: System Online');
 
             setTimeout(() => {
@@ -813,6 +1123,7 @@ const app = createApp({
             errorMsg,
             isShake,
             isTermsModalOpen,
+            lastError,
             generatedContent,
             thoughtLog,
             thoughtLogContainer, // For auto-scroll
@@ -848,6 +1159,8 @@ const app = createApp({
             humanizeContent,
             loadHistoryItem,
             copyToClipboard,
+            clearLastError,
+            downloadDiagnosticReport,
             lastSignature,
             renderMath
         };

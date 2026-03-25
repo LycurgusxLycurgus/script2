@@ -345,10 +345,10 @@
                                     <div class="file-drop-zone" @click="$refs.fileInput.click()" @dragover.prevent
                                         @drop.prevent="handleFileUpload">
                                         <p class="text-sm text-secondary">Click or drag files here</p>
-                                        <p class="text-xs text-secondary mt-1">Images, PDFs, and Texts</p>
+                                        <p class="text-xs text-secondary mt-1">PNG, JPG, WEBP, HEIC, HEIF, PDF, and TXT</p>
                                     </div>
                                     <input ref="fileInput" type="file" @change="handleFileUpload" multiple
-                                        accept="image/*,.pdf,.txt,.doc,.docx" class="hidden">
+                                        accept=".png,.jpg,.jpeg,.webp,.heic,.heif,.pdf,.txt,image/png,image/jpeg,image/webp,image/heic,image/heif,application/pdf,text/plain" class="hidden">
 
                                     <div v-if="homeworkForm.files.length > 0" class="file-list">
                                         <div v-for="(file, index) in homeworkForm.files" :key="index" class="file-item">
@@ -442,6 +442,24 @@
                     </div>
 
                 </transition>
+
+                <div v-if="lastError" class="diag-panel">
+                    <div>
+                        <p class="diag-title">Request failed</p>
+                        <p class="diag-meta">{{ lastError.message }}</p>
+                        <p class="diag-meta">Support ID: {{ lastError.supportId }}</p>
+                        <p v-if="lastError.requestId" class="diag-meta">Request ID: {{ lastError.requestId }}</p>
+                        <p v-if="lastError.status" class="diag-meta">HTTP: {{ lastError.status }} {{ lastError.statusText }}</p>
+                    </div>
+                    <div class="diag-actions">
+                        <button type="button" @click="downloadDiagnosticReport" class="status-btn text-xs py-2 px-4">
+                            Download Diagnostic Report
+                        </button>
+                        <button type="button" @click="clearLastError" class="status-btn text-xs py-2 px-4">
+                            Dismiss
+                        </button>
+                    </div>
+                </div>
 
             </main>
 
