@@ -96,6 +96,11 @@ const app = createApp({
         const copyBtnText = ref('Copy');
         const lastSignature = ref(null);
         const lastError = ref(null);
+        const hasGenerationAttempted = ref(false);
+        const generationAttemptCount = ref(0);
+        const recentGenerationAttempts = ref([]);
+        const lastSuccessfulGenerationAt = ref(null);
+        const lastGenerationMetrics = ref(null);
 
         // --- Data: Auth ---
         const credentials = Array.isArray(window.SCRIPTORIA_USERS) ? window.SCRIPTORIA_USERS : [];
@@ -281,10 +286,36 @@ const app = createApp({
             lastError.value = null;
         };
 
+        const pushGenerationAttempt = (attempt) => {
+            recentGenerationAttempts.value.unshift({
+                at: new Date().toISOString(),
+                ...attempt
+            });
+
+            if (recentGenerationAttempts.value.length > 10) {
+                recentGenerationAttempts.value.pop();
+            }
+        };
+
+        const getConnectionDetails = () => {
+            const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+            if (!connection) return null;
+
+            return {
+                effectiveType: connection.effectiveType || null,
+                downlink: connection.downlink || null,
+                rtt: connection.rtt || null,
+                saveData: connection.saveData || false
+            };
+        };
+
         const buildRuntimeContext = () => ({
             appVersion: APP_VERSION,
             appState: appState.value,
             homeworkType: homeworkType.value,
+            hasGenerationAttempted: hasGenerationAttempted.value,
+            generationAttemptCount: generationAttemptCount.value,
+            lastSuccessfulGenerationAt: lastSuccessfulGenerationAt.value,
             fileCount: homeworkForm.files.length,
             files: homeworkForm.files.map(file => ({
                 name: file.name,
@@ -292,7 +323,22 @@ const app = createApp({
                 size: file.size || null
             })),
             hasStyleProfile: !!localStorage.getItem('scriptoria_style_profile'),
-            hasLastSignature: !!lastSignature.value
+            hasLastSignature: !!lastSignature.value,
+            recentGenerationAttempts: recentGenerationAttempts.value,
+            lastGenerationMetrics: lastGenerationMetrics.value,
+            page: {
+                href: window.location.href,
+                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || null,
+                viewport: {
+                    width: window.innerWidth,
+                    height: window.innerHeight
+                },
+                screen: {
+                    width: window.screen?.width || null,
+                    height: window.screen?.height || null
+                }
+            },
+            connection: getConnectionDetails()
         });
 
         const setUserVisibleError = (error, stage) => {
@@ -334,7 +380,8 @@ const app = createApp({
                 browser: {
                     userAgent: navigator.userAgent,
                     language: navigator.language,
-                    online: navigator.onLine
+                    online: navigator.onLine,
+                    platform: navigator.platform || null
                 },
                 lastError: lastError.value,
                 runtime: buildRuntimeContext(),
@@ -446,6 +493,7 @@ const app = createApp({
 
             const decoder = new TextDecoder();
             let buffer = '';
+            let eventCount = 0;
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -462,16 +510,20 @@ const app = createApp({
                     if (!jsonStr || jsonStr === '[DONE]') continue;
 
                     try {
+                        eventCount += 1;
                         onEvent(JSON.parse(jsonStr));
                     } catch (parseError) {
                         diagnostics.warn('sse.parse_error', {
                             context,
+                            errorStage: 'sse_parse',
                             message: parseError?.message || String(parseError),
                             linePreview: jsonStr
                         });
                     }
                 }
             }
+
+            return { eventCount };
         };
 
         const getFileExtension = (fileName = '') => {
@@ -689,7 +741,7 @@ const app = createApp({
                 streamType: 'structured'
             });
 
-            await readSseStream(response, (data) => {
+            const streamSummary = await readSseStream(response, (data) => {
                 const parts = data.candidates?.[0]?.content?.parts || [];
 
                 for (const part of parts) {
@@ -708,6 +760,12 @@ const app = createApp({
                     }
                 }
             }, { requestId, feature: 'style_analysis' });
+
+            diagnostics.info('structured.stream_complete', {
+                requestId,
+                eventCount: streamSummary.eventCount,
+                jsonLength: jsonAccumulator.length
+            });
 
             try {
                 return jsonAccumulator ? JSON.parse(jsonAccumulator) : null;
@@ -766,7 +824,9 @@ const app = createApp({
                 usingHistory: !!history
             });
 
-            await readSseStream(response, (data) => {
+            let textChunkCount = 0;
+            let thoughtChunkCount = 0;
+            const streamSummary = await readSseStream(response, (data) => {
                 const parts = data.candidates?.[0]?.content?.parts || [];
 
                 for (const part of parts) {
@@ -775,12 +835,14 @@ const app = createApp({
                     }
 
                     if (part.thought) {
+                        thoughtChunkCount += 1;
                         if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
                             thoughtLog.value.push({ text: part.text || '', isThought: true });
                         } else {
                             thoughtLog.value[thoughtLog.value.length - 1].text += part.text || '';
                         }
                     } else if (part.text) {
+                        textChunkCount += 1;
                         generatedContent.value += part.text;
                     }
                 }
@@ -789,7 +851,12 @@ const app = createApp({
                 feature: history ? 'humanize' : 'homework'
             });
 
-            return requestId;
+            return {
+                requestId,
+                streamEventCount: streamSummary.eventCount,
+                textChunkCount,
+                thoughtChunkCount
+            };
         };
 
         const finishStyleSetup = async () => {
@@ -839,16 +906,33 @@ const app = createApp({
                 return;
             }
 
+            hasGenerationAttempted.value = true;
+            generationAttemptCount.value += 1;
             appState.value = 'GENERATING';
             systemMessage.value = 'The Core is thinking...';
             generatedContent.value = '';
             thoughtLog.value = []; // Reset thoughts
             lastSignature.value = null; // Reset signature for new generation
             clearLastError();
+            lastGenerationMetrics.value = null;
+            const attemptNumber = generationAttemptCount.value;
+            const attemptStartedAt = performance.now();
+
+            diagnostics.info('generation.start', {
+                attemptNumber,
+                homeworkType: homeworkType.value,
+                fileCount: homeworkForm.files.length
+            });
 
             const unsupportedFiles = homeworkForm.files.filter(file => !file.mimeType || !SUPPORTED_INLINE_MIME_TYPES.has(file.mimeType));
             if (unsupportedFiles.length > 0) {
                 const error = new Error(`Unsupported file type: ${unsupportedFiles[0].name}. Use PNG, JPG, WEBP, HEIC, HEIF, PDF, or TXT.`);
+                pushGenerationAttempt({
+                    attemptNumber,
+                    status: 'blocked',
+                    reason: 'unsupported_file_type',
+                    errorStage: 'upload'
+                });
                 setUserVisibleError(error, 'homework generation');
                 appState.value = 'DASHBOARD';
                 return;
@@ -866,10 +950,47 @@ const app = createApp({
                     .replace('{{DETAILS}}', homeworkForm.details || 'None');
 
                 // Use Streaming with Thinking
-                await callGeminiStream(userPrompt, systemPrompt, homeworkForm.files);
+                const result = await callGeminiStream(userPrompt, systemPrompt, homeworkForm.files);
+                const durationMs = Math.round(performance.now() - attemptStartedAt);
+                const outputLength = generatedContent.value.length;
+                const hadVisibleContent = outputLength > 0;
+                const hadPreviousFailuresBeforeSuccess = recentGenerationAttempts.value.some(attempt =>
+                    attempt.status === 'failed' || attempt.status === 'blocked'
+                );
 
                 // Add to history only if successful
                 addToHistory(homeworkForm.topic);
+                lastSuccessfulGenerationAt.value = new Date().toISOString();
+                lastGenerationMetrics.value = {
+                    attemptNumber,
+                    durationMs,
+                    outputLength,
+                    hadVisibleContent,
+                    textChunkCount: result.textChunkCount,
+                    thoughtChunkCount: result.thoughtChunkCount,
+                    streamEventCount: result.streamEventCount,
+                    hadPreviousFailuresBeforeSuccess
+                };
+                pushGenerationAttempt({
+                    attemptNumber,
+                    status: 'success',
+                    requestId: result.requestId,
+                    durationMs,
+                    outputLength,
+                    hadVisibleContent,
+                    hadPreviousFailuresBeforeSuccess
+                });
+                diagnostics.info('generation.complete', {
+                    attemptNumber,
+                    requestId: result.requestId,
+                    durationMs,
+                    outputLength,
+                    hadVisibleContent,
+                    textChunkCount: result.textChunkCount,
+                    thoughtChunkCount: result.thoughtChunkCount,
+                    streamEventCount: result.streamEventCount,
+                    hadPreviousFailuresBeforeSuccess
+                });
                 appState.value = 'RESULT';
 
                 // Render math after DOM is updated with new state
@@ -879,7 +1000,18 @@ const app = createApp({
                 appState.value = 'RESULT';
 
             } catch (e) {
+                pushGenerationAttempt({
+                    attemptNumber,
+                    status: 'failed',
+                    requestId: e?.requestId || null,
+                    statusCode: e?.status || null,
+                    message: e?.message || String(e),
+                    errorStage: e?.errorStage || 'fetch',
+                    durationMs: Math.round(performance.now() - attemptStartedAt)
+                });
                 diagnostics.error('homework_generation.failed', {
+                    attemptNumber,
+                    errorStage: e?.errorStage || 'fetch',
                     message: e?.message || String(e),
                     requestId: e?.requestId || null
                 });
@@ -1124,6 +1256,7 @@ const app = createApp({
             isShake,
             isTermsModalOpen,
             lastError,
+            hasGenerationAttempted,
             generatedContent,
             thoughtLog,
             thoughtLogContainer, // For auto-scroll

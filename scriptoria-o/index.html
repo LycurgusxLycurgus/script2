@@ -362,6 +362,12 @@
                                     Generate
                                 </button>
 
+                                <div v-if="hasGenerationAttempted" class="report-link-row">
+                                    <button type="button" @click="downloadDiagnosticReport" class="report-link">
+                                        Having trouble? Send a report
+                                    </button>
+                                </div>
+
                             </form>
 
                         </div>
@@ -429,10 +435,16 @@
 
                         <!-- Result Footer -->
                         <div class="p-6 border-t border-white/5 bg-black/20 flex justify-between items-center">
-                            <a href="https://quillbot.com/ai-content-detector" target="_blank"
-                                class="text-xs text-secondary hover:text-gold transition-colors">
-                                Check in Quillbot ↗
-                            </a>
+                            <div class="flex flex-col gap-2">
+                                <a href="https://quillbot.com/ai-content-detector" target="_blank"
+                                    class="text-xs text-secondary hover:text-gold transition-colors">
+                                    Check in Quillbot ↗
+                                </a>
+                                <button v-if="hasGenerationAttempted" type="button" @click="downloadDiagnosticReport"
+                                    class="report-link text-left">
+                                    Having trouble? Send a report
+                                </button>
+                            </div>
                             <button @click="humanizeContent"
                                 class="status-btn text-xs py-2 px-4 border border-gold/20 hover:border-gold/50 text-gold">
                                 Make Undetectable ✨
