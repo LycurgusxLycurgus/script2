@@ -2,6 +2,9 @@ const { createApp, ref, reactive, computed, onMounted, nextTick, watch } = Vue;
 
 const APP_VERSION = '3.0';
 const MAX_DIAGNOSTIC_ENTRIES = 60;
+const PRIMARY_GEMINI_MODEL = 'gemini-3-flash-preview';
+const FALLBACK_GEMINI_MODEL = 'gemini-3.1-flash-lite-preview';
+const FALLBACK_RETRY_DELAY_MS = 30000;
 const SUPPORTED_INLINE_MIME_TYPES = new Set([
     'application/pdf',
     'text/plain',
@@ -426,6 +429,33 @@ const app = createApp({
                 : 0
         });
 
+        const buildGeminiStreamUrl = (apiKey, model) =>
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
+
+        const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+        const isModelAvailabilityError = (error) => {
+            const message = `${error?.message || ''} ${error?.statusText || ''} ${error?.responsePreview || ''}`.toLowerCase();
+            return [429, 500, 503].includes(error?.status) || [
+                'high demand',
+                'overloaded',
+                'unavailable',
+                'resource_exhausted',
+                'quota exceeded',
+                'try again later'
+            ].some(fragment => message.includes(fragment));
+        };
+
+        const createRetryScheduledError = (baseError) => {
+            const error = new Error(`Google API is under high demand. Your request is being retried automatically in ${Math.round(FALLBACK_RETRY_DELAY_MS / 1000)} seconds.`);
+            error.requestId = baseError?.requestId || null;
+            error.status = baseError?.status || null;
+            error.statusText = baseError?.statusText || null;
+            error.responsePreview = baseError?.responsePreview || null;
+            error.errorStage = 'retry_wait';
+            return error;
+        };
+
         const fetchWithDiagnostics = async (url, payload, context = {}) => {
             const requestId = generateDiagnosticId('req');
             const startedAt = performance.now();
@@ -454,6 +484,7 @@ const app = createApp({
 
                 const error = new Error('Network request failed.');
                 error.requestId = requestId;
+                error.errorStage = 'fetch';
                 throw error;
             }
 
@@ -464,6 +495,7 @@ const app = createApp({
                 error.status = response.status;
                 error.statusText = response.statusText;
                 error.responsePreview = truncateText(responseText, 300);
+                error.errorStage = 'fetch';
 
                 diagnostics.error('request.http_error', {
                     requestId,
@@ -717,8 +749,6 @@ const app = createApp({
         // 1. Structured Output Call with Streaming (Gemini 2.5 Pro for Style Analysis)
         const callGeminiStructuredStream = async (userPrompt, schema) => {
             const apiKey = getApiKey();
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse&key=${apiKey}`;
-
             const payload = {
                 contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
                 generationConfig: {
@@ -734,57 +764,100 @@ const app = createApp({
                 }
             };
 
-            let jsonAccumulator = '';
+            const attemptModelRequest = async (model) => {
+                let jsonAccumulator = '';
+                const { response, requestId } = await fetchWithDiagnostics(buildGeminiStreamUrl(apiKey, model), payload, {
+                    feature: 'style_analysis',
+                    streamType: 'structured',
+                    model
+                });
 
-            const { response, requestId } = await fetchWithDiagnostics(url, payload, {
-                feature: 'style_analysis',
-                streamType: 'structured'
-            });
+                const streamSummary = await readSseStream(response, (data) => {
+                    const parts = data.candidates?.[0]?.content?.parts || [];
 
-            const streamSummary = await readSseStream(response, (data) => {
-                const parts = data.candidates?.[0]?.content?.parts || [];
-
-                for (const part of parts) {
-                    if (part.thoughtSignature) {
-                        lastSignature.value = part.thoughtSignature;
-                    }
-
-                    if (part.thought) {
-                        if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
-                            thoughtLog.value.push({ text: part.text || '', isThought: true });
-                        } else {
-                            thoughtLog.value[thoughtLog.value.length - 1].text += part.text || '';
+                    for (const part of parts) {
+                        if (part.thoughtSignature) {
+                            lastSignature.value = part.thoughtSignature;
                         }
-                    } else if (part.text) {
-                        jsonAccumulator += part.text;
-                    }
-                }
-            }, { requestId, feature: 'style_analysis' });
 
-            diagnostics.info('structured.stream_complete', {
-                requestId,
-                eventCount: streamSummary.eventCount,
-                jsonLength: jsonAccumulator.length
-            });
+                        if (part.thought) {
+                            if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
+                                thoughtLog.value.push({ text: part.text || '', isThought: true });
+                            } else {
+                                thoughtLog.value[thoughtLog.value.length - 1].text += part.text || '';
+                            }
+                        } else if (part.text) {
+                            jsonAccumulator += part.text;
+                        }
+                    }
+                }, { requestId, feature: 'style_analysis', model });
+
+                diagnostics.info('structured.stream_complete', {
+                    requestId,
+                    model,
+                    eventCount: streamSummary.eventCount,
+                    jsonLength: jsonAccumulator.length
+                });
+
+                try {
+                    return jsonAccumulator ? JSON.parse(jsonAccumulator) : null;
+                } catch (parseError) {
+                    diagnostics.error('structured.json_parse_failed', {
+                        requestId,
+                        model,
+                        message: parseError?.message || String(parseError),
+                        jsonPreview: jsonAccumulator
+                    });
+                    const error = new Error('Structured response parse failed.');
+                    error.requestId = requestId;
+                    error.errorStage = 'finalize';
+                    throw error;
+                }
+            };
 
             try {
-                return jsonAccumulator ? JSON.parse(jsonAccumulator) : null;
-            } catch (parseError) {
-                diagnostics.error('structured.json_parse_failed', {
-                    requestId,
-                    message: parseError?.message || String(parseError),
-                    jsonPreview: jsonAccumulator
+                return await attemptModelRequest(PRIMARY_GEMINI_MODEL);
+            } catch (primaryError) {
+                if (!isModelAvailabilityError(primaryError)) throw primaryError;
+
+                diagnostics.warn('model.fallback_triggered', {
+                    feature: 'style_analysis',
+                    fromModel: PRIMARY_GEMINI_MODEL,
+                    toModel: FALLBACK_GEMINI_MODEL,
+                    reason: primaryError.message
                 });
-                const error = new Error('Structured response parse failed.');
-                error.requestId = requestId;
-                throw error;
+
+                try {
+                    return await attemptModelRequest(FALLBACK_GEMINI_MODEL);
+                } catch (fallbackError) {
+                    if (!isModelAvailabilityError(fallbackError)) throw fallbackError;
+
+                    diagnostics.warn('model.retry_scheduled', {
+                        feature: 'style_analysis',
+                        model: FALLBACK_GEMINI_MODEL,
+                        delayMs: FALLBACK_RETRY_DELAY_MS,
+                        reason: fallbackError.message
+                    });
+                    systemMessage.value = 'Google API is under high demand. Retrying automatically in 30 seconds...';
+                    lastError.value = {
+                        supportId: generateDiagnosticId('support'),
+                        stage: 'style setup',
+                        message: createRetryScheduledError(fallbackError).message,
+                        requestId: fallbackError.requestId || null,
+                        status: fallbackError.status || null,
+                        statusText: fallbackError.statusText || null
+                    };
+                    await wait(FALLBACK_RETRY_DELAY_MS);
+                    clearLastError();
+                    systemMessage.value = 'Retrying with fallback model...';
+                    return await attemptModelRequest(FALLBACK_GEMINI_MODEL);
+                }
             }
         };
 
         // 2. Streaming Call with Thinking
         const callGeminiStream = async (userPrompt, systemPrompt, files = [], history = null) => {
             const apiKey = getApiKey();
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse&key=${apiKey}`;
 
             let contents;
             if (history) {
@@ -812,51 +885,95 @@ const app = createApp({
                     maxOutputTokens: 60000,
                     thinkingConfig: {
                         includeThoughts: true,
-                        thinkingLevel: "medium"
+                        thinkingLevel: "high"
                     }
                 }
             };
 
-            const { response, requestId } = await fetchWithDiagnostics(url, payload, {
-                feature: history ? 'humanize' : 'homework',
-                streamType: 'text',
-                fileCount: files.length,
-                usingHistory: !!history
-            });
+            const attemptModelRequest = async (model) => {
+                const { response, requestId } = await fetchWithDiagnostics(buildGeminiStreamUrl(apiKey, model), payload, {
+                    feature: history ? 'humanize' : 'homework',
+                    streamType: 'text',
+                    fileCount: files.length,
+                    usingHistory: !!history,
+                    model
+                });
 
-            let textChunkCount = 0;
-            let thoughtChunkCount = 0;
-            const streamSummary = await readSseStream(response, (data) => {
-                const parts = data.candidates?.[0]?.content?.parts || [];
+                let textChunkCount = 0;
+                let thoughtChunkCount = 0;
+                const streamSummary = await readSseStream(response, (data) => {
+                    const parts = data.candidates?.[0]?.content?.parts || [];
 
-                for (const part of parts) {
-                    if (part.thoughtSignature) {
-                        lastSignature.value = part.thoughtSignature;
-                    }
-
-                    if (part.thought) {
-                        thoughtChunkCount += 1;
-                        if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
-                            thoughtLog.value.push({ text: part.text || '', isThought: true });
-                        } else {
-                            thoughtLog.value[thoughtLog.value.length - 1].text += part.text || '';
+                    for (const part of parts) {
+                        if (part.thoughtSignature) {
+                            lastSignature.value = part.thoughtSignature;
                         }
-                    } else if (part.text) {
-                        textChunkCount += 1;
-                        generatedContent.value += part.text;
-                    }
-                }
-            }, {
-                requestId,
-                feature: history ? 'humanize' : 'homework'
-            });
 
-            return {
-                requestId,
-                streamEventCount: streamSummary.eventCount,
-                textChunkCount,
-                thoughtChunkCount
+                        if (part.thought) {
+                            thoughtChunkCount += 1;
+                            if (thoughtLog.value.length === 0 || !thoughtLog.value[thoughtLog.value.length - 1].isThought) {
+                                thoughtLog.value.push({ text: part.text || '', isThought: true });
+                            } else {
+                                thoughtLog.value[thoughtLog.value.length - 1].text += part.text || '';
+                            }
+                        } else if (part.text) {
+                            textChunkCount += 1;
+                            generatedContent.value += part.text;
+                        }
+                    }
+                }, {
+                    requestId,
+                    feature: history ? 'humanize' : 'homework',
+                    model
+                });
+
+                return {
+                    requestId,
+                    streamEventCount: streamSummary.eventCount,
+                    textChunkCount,
+                    thoughtChunkCount,
+                    model
+                };
             };
+
+            try {
+                return await attemptModelRequest(PRIMARY_GEMINI_MODEL);
+            } catch (primaryError) {
+                if (!isModelAvailabilityError(primaryError)) throw primaryError;
+
+                diagnostics.warn('model.fallback_triggered', {
+                    feature: history ? 'humanize' : 'homework',
+                    fromModel: PRIMARY_GEMINI_MODEL,
+                    toModel: FALLBACK_GEMINI_MODEL,
+                    reason: primaryError.message
+                });
+
+                try {
+                    return await attemptModelRequest(FALLBACK_GEMINI_MODEL);
+                } catch (fallbackError) {
+                    if (!isModelAvailabilityError(fallbackError)) throw fallbackError;
+
+                    diagnostics.warn('model.retry_scheduled', {
+                        feature: history ? 'humanize' : 'homework',
+                        model: FALLBACK_GEMINI_MODEL,
+                        delayMs: FALLBACK_RETRY_DELAY_MS,
+                        reason: fallbackError.message
+                    });
+                    systemMessage.value = 'Google API is under high demand. Retrying automatically in 30 seconds...';
+                    lastError.value = {
+                        supportId: generateDiagnosticId('support'),
+                        stage: history ? 'humanization' : 'homework generation',
+                        message: createRetryScheduledError(fallbackError).message,
+                        requestId: fallbackError.requestId || null,
+                        status: fallbackError.status || null,
+                        statusText: fallbackError.statusText || null
+                    };
+                    await wait(FALLBACK_RETRY_DELAY_MS);
+                    clearLastError();
+                    systemMessage.value = 'Retrying with fallback model...';
+                    return await attemptModelRequest(FALLBACK_GEMINI_MODEL);
+                }
+            }
         };
 
         const finishStyleSetup = async () => {
@@ -963,6 +1080,7 @@ const app = createApp({
                 lastSuccessfulGenerationAt.value = new Date().toISOString();
                 lastGenerationMetrics.value = {
                     attemptNumber,
+                    model: result.model,
                     durationMs,
                     outputLength,
                     hadVisibleContent,
@@ -975,6 +1093,7 @@ const app = createApp({
                     attemptNumber,
                     status: 'success',
                     requestId: result.requestId,
+                    model: result.model,
                     durationMs,
                     outputLength,
                     hadVisibleContent,
@@ -983,6 +1102,7 @@ const app = createApp({
                 diagnostics.info('generation.complete', {
                     attemptNumber,
                     requestId: result.requestId,
+                    model: result.model,
                     durationMs,
                     outputLength,
                     hadVisibleContent,
