@@ -240,6 +240,88 @@
                         </div>
                     </div>
 
+                    <!-- CAREER SETUP State -->
+                    <div v-else-if="appState === 'CAREER_SETUP'" key="career_setup"
+                        class="flex-1 flex items-center justify-center p-8">
+                        <div class="max-w-xl w-full text-center">
+                            <p class="text-xs text-gold uppercase tracking-[0.3em] mb-3">Academic Profile</p>
+                            <h2 class="text-3xl font-cinzel mb-4">Add your career or major</h2>
+                            <p class="text-secondary text-sm leading-relaxed mb-8">
+                                Scriptoria now adapts assignments to your college field. You can change this later from
+                                the Career / Major field on the assignment screen.
+                            </p>
+                            <form @submit.prevent="saveCareerAndContinue" :class="{ 'animate-shake': isShake }"
+                                class="space-y-5 text-left">
+                                <div>
+                                    <label class="text-xs text-gold uppercase tracking-widest mb-2 block">Career /
+                                        Major</label>
+                                    <input v-model="careerForm.career" type="text"
+                                        placeholder="e.g., Psychology, Business Administration, Computer Science"
+                                        class="ghost-input">
+                                </div>
+                                <p v-if="errorMsg" class="text-error text-xs text-center">{{ errorMsg }}</p>
+                                <button type="submit" class="status-btn primary w-full">Continue</button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- ASSIGNMENT DECODER State -->
+                    <div v-else-if="appState === 'ASSIGNMENT_DECODER'" key="assignment_decoder"
+                        class="flex-1 overflow-y-auto custom-scrollbar p-8">
+                        <div class="max-w-3xl mx-auto flow-card">
+                            <div class="text-center mb-8">
+                                <p class="text-xs text-gold uppercase tracking-[0.3em] mb-3">Assignment Decoder</p>
+                                <h2 class="text-3xl font-cinzel mb-4">Start with the professor's instructions</h2>
+                                <p class="text-secondary text-sm leading-relaxed">
+                                    Paste the assignment brief or upload the allowed files. Scriptoria will pre-fill the
+                                    manual screen so you can review everything before generating.
+                                </p>
+                            </div>
+
+                            <form @submit.prevent="decodeAssignment" :class="{ 'animate-shake': isShake }"
+                                class="space-y-6">
+                                <div>
+                                    <label class="text-xs text-gold uppercase tracking-widest mb-2 block">Assignment
+                                        Instructions</label>
+                                    <textarea v-model="decoderForm.assignmentText"
+                                        placeholder="Paste the prompt, rubric, professor notes, or assignment brief..."
+                                        class="ghost-input h-40 resize-none"></textarea>
+                                </div>
+
+                                <div>
+                                    <label class="text-xs text-gold uppercase tracking-widest mb-2 block">Upload Brief
+                                        or Source Material</label>
+                                    <div class="file-drop-zone" @click="$refs.decoderFileInput.click()"
+                                        @dragover.prevent @drop.prevent="handleDecoderFileUpload">
+                                        <p class="text-sm text-secondary">Click or drag files here</p>
+                                        <p class="text-xs text-secondary mt-1">PNG, JPG, WEBP, HEIC, HEIF, PDF, and TXT</p>
+                                    </div>
+                                    <input ref="decoderFileInput" type="file" @change="handleDecoderFileUpload" multiple
+                                        accept=".png,.jpg,.jpeg,.webp,.heic,.heif,.pdf,.txt,image/png,image/jpeg,image/webp,image/heic,image/heif,application/pdf,text/plain"
+                                        class="hidden">
+
+                                    <div v-if="decoderForm.files.length > 0" class="file-list">
+                                        <div v-for="(file, index) in decoderForm.files" :key="index" class="file-item">
+                                            <span class="text-sm text-white">{{ file.name }}</span>
+                                            <span @click="removeDecoderFile(index)" class="file-item-remove">×</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <p v-if="errorMsg" class="text-error text-xs text-center">{{ errorMsg }}</p>
+
+                                <div class="decoder-actions">
+                                    <button type="button" @click="goToManualEntry" class="quiet-action">
+                                        Enter manually instead
+                                    </button>
+                                    <button type="submit" class="status-btn primary">
+                                        Decode Assignment
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
                     <!-- DASHBOARD State -->
                     <div v-else-if="appState === 'DASHBOARD'" key="dashboard" class="flex-1 dashboard-container">
 
@@ -289,21 +371,93 @@
                         <!-- Main Area -->
                         <div class="main-area">
 
+                            <div class="dashboard-top-actions">
+                                <button type="button" @click="openAssignmentDecoder" class="quiet-action">
+                                    Open Assignment Decoder
+                                </button>
+                            </div>
+
                             <!-- Toggle -->
                             <div class="toggle-group">
                                 <button @click="toggleHomeworkType('text')"
                                     :class="{ 'active': homeworkType === 'text' }" class="toggle-btn">
-                                    Text Homework
+                                    Text Assignment
                                 </button>
                                 <button @click="toggleHomeworkType('math')"
                                     :class="{ 'active': homeworkType === 'math' }" class="toggle-btn">
-                                    Math Homework
+                                    Math Assignment
                                 </button>
+                            </div>
+
+                            <div v-if="decoderNotice" class="decoder-notice">
+                                {{ decoderNotice }}
                             </div>
 
                             <!-- Form -->
                             <form @submit.prevent="generateHomework" :class="{ 'animate-shake': isShake }"
                                 class="space-y-6">
+
+                                <div class="meta-panel">
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        <div>
+                                            <label class="text-xs text-gold uppercase tracking-widest mb-2 block">Career /
+                                                Major</label>
+                                            <input v-model="assignmentMeta.career" @blur="saveAssignmentCareer"
+                                                type="text"
+                                                placeholder="e.g., Psychology, Nursing, Business"
+                                                class="ghost-input">
+                                            <p class="field-note">Used as a college lens. You can change it here anytime.</p>
+                                        </div>
+                                        <div>
+                                            <label class="text-xs text-gold uppercase tracking-widest mb-2 block">Assignment
+                                                Length</label>
+                                            <div class="length-row">
+                                                <button type="button" @click="adjustRequestedPages(-1)"
+                                                    class="page-stepper" aria-label="Decrease assignment pages">−</button>
+                                                <input v-model.number="assignmentMeta.requestedPages" type="number" min="1"
+                                                    @blur="setRequestedPages(assignmentMeta.requestedPages)"
+                                                    class="ghost-input compact-input no-spinner">
+                                                <button type="button" @click="adjustRequestedPages(1)"
+                                                    class="page-stepper" aria-label="Increase assignment pages">+</button>
+                                                <span class="length-unit">pages</span>
+                                            </div>
+                                            <p class="field-note">
+                                                Length target for this assignment.
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+                                        <label class="terms-check">
+                                            <input v-model="assignmentMeta.citationRequired" type="checkbox">
+                                            <span>Use a required citation style</span>
+                                        </label>
+                                        <select v-model="assignmentMeta.citationStyle"
+                                            :disabled="!assignmentMeta.citationRequired" class="ghost-select">
+                                            <option v-for="option in citationOptions" :key="option.value"
+                                                :value="option.value">
+                                                {{ option.label }}
+                                            </option>
+                                        </select>
+                                    </div>
+
+                                    <textarea v-if="assignmentMeta.citationRequired"
+                                        v-model="assignmentMeta.citationInstructions"
+                                        placeholder="Optional citation details from your professor..."
+                                        class="ghost-input h-16 resize-none mt-4"></textarea>
+                                    <p v-if="assignmentMeta.citationRequired" class="field-note mt-2">
+                                        Scriptoria can cite uploaded/source material or sources the model already knows.
+                                        Verify citations before submitting because this app does not perform live web
+                                        research.
+                                    </p>
+
+                                    <label class="terms-check mt-5">
+                                        <input v-model="guidanceQuestionsEnabled" type="checkbox">
+                                        <span>Ask up to 3 refinement questions before generating
+                                            <span class="field-note block">Scriptoria will use your answers to steer the final output toward the angle, depth, and voice you want.</span>
+                                        </span>
+                                    </label>
+                                </div>
 
                                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     <div>
@@ -359,7 +513,7 @@
                                 </div>
 
                                 <button type="submit" class="status-btn primary w-full">
-                                    Generate
+                                    Generate Assignment
                                 </button>
 
                                 <div v-if="hasGenerationAttempted" class="report-link-row">
@@ -372,6 +526,61 @@
 
                         </div>
 
+                    </div>
+
+                    <!-- QUESTION GUIDANCE State -->
+                    <div v-else-if="appState === 'QUESTION_GUIDANCE'" key="question_guidance"
+                        class="flex-1 overflow-y-auto custom-scrollbar p-8">
+                        <div class="max-w-3xl mx-auto flow-card">
+                            <div class="text-center mb-8">
+                                <p class="text-xs text-gold uppercase tracking-[0.3em] mb-3">Before Generation</p>
+                                <h2 class="text-3xl font-cinzel mb-4">Three choices to avoid generic output</h2>
+                                <p class="text-secondary text-sm leading-relaxed">
+                                    Recommended answers are already selected. Change only what matters, or continue
+                                    directly.
+                                </p>
+                            </div>
+
+                            <div class="space-y-5">
+                                <div v-for="question in guidanceFlow.questions" :key="question.id"
+                                    class="guidance-card">
+                                    <div class="mb-4">
+                                        <p class="guidance-reason">{{ question.reason }}</p>
+                                        <h3 class="guidance-question">{{ question.question }}</h3>
+                                    </div>
+
+                                    <div class="guidance-options">
+                                        <button v-for="option in question.options" :key="option.id" type="button"
+                                            @click="selectGuidanceOption(question.id, option.id)"
+                                            class="guidance-option"
+                                            :class="{ 'active': guidanceFlow.answers[question.id]?.selectedOptionId === option.id }">
+                                            <span>{{ option.label }}</span>
+                                            <small v-if="question.recommendedOptionId === option.id">Recommended</small>
+                                        </button>
+                                        <button type="button" @click="selectGuidanceCustomOption(question.id)"
+                                            class="guidance-option custom-guidance-option"
+                                            :class="{ 'active': guidanceFlow.answers[question.id]?.selectedOptionId === 'custom' }">
+                                            <span>Custom answer</span>
+                                            <small>Write your own</small>
+                                        </button>
+                                    </div>
+
+                                    <input :value="guidanceFlow.answers[question.id]?.customText || ''"
+                                        @focus="selectGuidanceCustomOption(question.id)"
+                                        @input="setGuidanceCustomText(question.id, $event.target.value)" type="text"
+                                        :placeholder="question.customPlaceholder" class="ghost-input mt-4">
+                                </div>
+                            </div>
+
+                            <div class="decoder-actions mt-8">
+                                <button type="button" @click="appState = 'DASHBOARD'" class="quiet-action">
+                                    Back to assignment
+                                </button>
+                                <button type="button" @click="acceptGuidanceAndGenerate" class="status-btn primary">
+                                    Use These Answers
+                                </button>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- GENERATING State -->
@@ -414,7 +623,7 @@
                                     {{ copyBtnText }}
                                 </button>
                                 <button @click="generateHomework" class="status-btn primary text-xs py-2 px-4">
-                                    Regenerate
+                                    Regenerate Assignment
                                 </button>
                             </div>
                         </div>

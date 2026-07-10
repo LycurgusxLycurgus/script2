@@ -3,8 +3,10 @@ const { createApp, ref, reactive, computed, onMounted, nextTick, watch } = Vue;
 const APP_VERSION = '3.0';
 const MAX_DIAGNOSTIC_ENTRIES = 60;
 const PRIMARY_GEMINI_MODEL = 'gemini-3-flash-preview';
-const FALLBACK_GEMINI_MODEL = 'gemini-3.1-flash-lite-preview';
+const FALLBACK_GEMINI_MODEL = 'gemini-3.1-flash-lite';
 const FALLBACK_RETRY_DELAY_MS = 30000;
+const CAREER_STORAGE_KEY = 'scriptoria_career';
+const WORDS_PER_PAGE = 275;
 const SUPPORTED_INLINE_MIME_TYPES = new Set([
     'application/pdf',
     'text/plain',
@@ -90,7 +92,7 @@ const diagnostics = (() => {
 const app = createApp({
     setup() {
         // --- State ---
-        const appState = ref('INIT'); // INIT, LOGIN, SETUP_KEY, SETUP_STYLE, STYLE_REVIEW, DASHBOARD, GENERATING, RESULT
+        const appState = ref('INIT'); // INIT, LOGIN, SETUP_KEY, SETUP_STYLE, STYLE_REVIEW, CAREER_SETUP, ASSIGNMENT_DECODER, DASHBOARD, QUESTION_GUIDANCE, GENERATING, RESULT
         const systemMessage = ref('Initializing Obsidian Core...');
         const errorMsg = ref('');
         const isShake = ref(false);
@@ -104,6 +106,7 @@ const app = createApp({
         const recentGenerationAttempts = ref([]);
         const lastSuccessfulGenerationAt = ref(null);
         const lastGenerationMetrics = ref(null);
+        const decoderNotice = ref('');
 
         // --- Data: Auth ---
         const credentials = Array.isArray(window.SCRIPTORIA_USERS) ? window.SCRIPTORIA_USERS : [];
@@ -116,6 +119,61 @@ const app = createApp({
         });
 
         const isTermsModalOpen = ref(false);
+
+        // --- Data: College Workflow ---
+        const careerForm = reactive({
+            career: localStorage.getItem(CAREER_STORAGE_KEY) || ''
+        });
+
+        const assignmentMeta = reactive({
+            career: careerForm.career,
+            lengthMode: 'pages',
+            requestedPages: 3,
+            targetWords: WORDS_PER_PAGE * 3,
+            citationRequired: false,
+            citationStyle: 'none',
+            citationInstructions: '',
+            enhancementQuestionsEnabled: false,
+            enhancementQuestionsAuto: true
+        });
+
+        const decoderForm = reactive({
+            assignmentText: '',
+            files: []
+        });
+
+        const guidanceFlow = reactive({
+            questions: [],
+            answers: {},
+            isPreparing: false,
+            wasShownForCurrentDraft: false
+        });
+
+        const pendingCareerNextState = ref('ASSIGNMENT_DECODER');
+
+        const citationOptions = [
+            { value: 'none', label: 'None' },
+            { value: 'apa7', label: 'APA 7' },
+            { value: 'mla9', label: 'MLA 9' },
+            { value: 'chicago_notes', label: 'Chicago Notes' },
+            { value: 'chicago_author_date', label: 'Chicago Author-Date' },
+            { value: 'ieee', label: 'IEEE' },
+            { value: 'vancouver', label: 'Vancouver' },
+            { value: 'harvard', label: 'Harvard' },
+            { value: 'custom', label: 'Custom' }
+        ];
+
+        const guidanceQuestionsEnabled = computed({
+            get() {
+                const pages = Number(assignmentMeta.requestedPages) || 0;
+                return assignmentMeta.enhancementQuestionsEnabled ||
+                    (assignmentMeta.enhancementQuestionsAuto && assignmentMeta.lengthMode === 'pages' && pages >= 10);
+            },
+            set(value) {
+                assignmentMeta.enhancementQuestionsAuto = false;
+                assignmentMeta.enhancementQuestionsEnabled = !!value;
+            }
+        });
 
         // --- Data: Style Interview ---
         const interviewStep = ref(0);
@@ -238,7 +296,7 @@ const app = createApp({
             {
                 id: 'text_preview',
                 type: 'text',
-                label: 'Text Homework Preview',
+                label: 'Text Assignment Preview',
                 topic: 'Do school uniforms improve student outcomes?',
                 subject: 'Education',
                 taskType: 'Argumentative Response',
@@ -247,7 +305,7 @@ const app = createApp({
             {
                 id: 'math_preview',
                 type: 'math',
-                label: 'Math Homework Preview',
+                label: 'Math Assignment Preview',
                 topic: 'Quadratic equation and interpretation',
                 subject: 'Algebra',
                 taskType: 'Solve and Explain',
@@ -316,6 +374,15 @@ const app = createApp({
             appVersion: APP_VERSION,
             appState: appState.value,
             homeworkType: homeworkType.value,
+            careerPresent: !!assignmentMeta.career?.trim(),
+            lengthMode: assignmentMeta.lengthMode,
+            requestedPages: assignmentMeta.lengthMode === 'pages' ? Number(assignmentMeta.requestedPages) || null : null,
+            targetWords: Number(assignmentMeta.targetWords) || null,
+            citationRequired: !!assignmentMeta.citationRequired,
+            citationStyle: assignmentMeta.citationStyle,
+            guidanceQuestionCount: guidanceFlow.questions.length,
+            guidanceAnsweredCount: Object.keys(guidanceFlow.answers).length,
+            decoderFileCount: decoderForm.files.length,
             hasGenerationAttempted: hasGenerationAttempted.value,
             generationAttemptCount: generationAttemptCount.value,
             lastSuccessfulGenerationAt: lastSuccessfulGenerationAt.value,
@@ -527,6 +594,25 @@ const app = createApp({
             let buffer = '';
             let eventCount = 0;
 
+            const processLine = (line) => {
+                if (!line.startsWith('data: ')) return;
+
+                const jsonStr = line.slice(6).trim();
+                if (!jsonStr || jsonStr === '[DONE]') return;
+
+                try {
+                    eventCount += 1;
+                    onEvent(JSON.parse(jsonStr));
+                } catch (parseError) {
+                    diagnostics.warn('sse.parse_error', {
+                        context,
+                        errorStage: 'sse_parse',
+                        message: parseError?.message || String(parseError),
+                        linePreview: jsonStr
+                    });
+                }
+            };
+
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -535,24 +621,16 @@ const app = createApp({
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
 
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
+                lines.forEach(processLine);
+            }
 
-                    const jsonStr = line.slice(6).trim();
-                    if (!jsonStr || jsonStr === '[DONE]') continue;
-
-                    try {
-                        eventCount += 1;
-                        onEvent(JSON.parse(jsonStr));
-                    } catch (parseError) {
-                        diagnostics.warn('sse.parse_error', {
-                            context,
-                            errorStage: 'sse_parse',
-                            message: parseError?.message || String(parseError),
-                            linePreview: jsonStr
-                        });
-                    }
-                }
+            const remaining = buffer.trim();
+            if (remaining) {
+                diagnostics.info('sse.final_buffer_flushed', {
+                    context,
+                    bufferLength: remaining.length
+                });
+                processLine(remaining);
             }
 
             return { eventCount };
@@ -570,6 +648,24 @@ const app = createApp({
 
             const extension = getFileExtension(file.name);
             return EXTENSION_TO_MIME[extension] || null;
+        };
+
+        const getFileMetadata = (files = []) => files.map(file => ({
+            name: file.name,
+            type: file.mimeType || file.type || 'unknown',
+            size: file.size || null
+        }));
+
+        const getUnsupportedFiles = (files = []) =>
+            files.filter(file => !file.mimeType || !SUPPORTED_INLINE_MIME_TYPES.has(file.mimeType));
+
+        const validateSupportedFiles = (files = [], stage = 'file upload') => {
+            const unsupportedFiles = getUnsupportedFiles(files);
+            if (unsupportedFiles.length === 0) return true;
+
+            const error = new Error(`Unsupported file type: ${unsupportedFiles[0].name}. Use PNG, JPG, WEBP, HEIC, HEIF, PDF, or TXT.`);
+            setUserVisibleError(error, stage);
+            return false;
         };
 
         // --- Schema: Style Analysis ---
@@ -596,7 +692,207 @@ const app = createApp({
             required: ["style_profile", "system_prompt"]
         };
 
-        // --- Methods ---
+        const assignmentDecoderSchema = {
+            type: "object",
+            properties: {
+                homeworkType: {
+                    type: "string",
+                    enum: ["text", "math"]
+                },
+                topic: { type: "string" },
+                subject: { type: "string" },
+                taskType: { type: "string" },
+                details: { type: "string" },
+                recommendedPages: { type: "number" },
+                citationRequired: { type: "boolean" },
+                citationStyle: {
+                    type: "string",
+                    enum: ["none", "apa7", "mla9", "chicago_notes", "chicago_author_date", "ieee", "vancouver", "harvard", "custom"]
+                },
+                confidence: {
+                    type: "string",
+                    enum: ["low", "medium", "high"]
+                },
+                missingInfo: {
+                    type: "array",
+                    items: { type: "string" }
+                }
+            },
+            required: ["homeworkType", "topic", "subject", "taskType", "details", "recommendedPages", "citationRequired", "citationStyle", "confidence", "missingInfo"]
+        };
+
+        const guidanceQuestionsSchema = {
+            type: "object",
+            properties: {
+                questions: {
+                    type: "array",
+                    minItems: 1,
+                    maxItems: 3,
+                    items: {
+                        type: "object",
+                        properties: {
+                            id: { type: "string" },
+                            question: { type: "string" },
+                            reason: { type: "string" },
+                            recommendedOptionId: { type: "string" },
+                            customPlaceholder: { type: "string" },
+                            options: {
+                                type: "array",
+                                minItems: 2,
+                                maxItems: 3,
+                                items: {
+                                    type: "object",
+                                    properties: {
+                                        id: { type: "string" },
+                                        label: { type: "string" },
+                                        value: { type: "string" }
+                                    },
+                                    required: ["id", "label", "value"]
+                                }
+                            }
+                        },
+                        required: ["id", "question", "reason", "recommendedOptionId", "customPlaceholder", "options"]
+                    }
+                }
+            },
+            required: ["questions"]
+        };
+
+        const normalizeNumber = (value, fallback) => {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+        };
+        const syncTargetWords = () => {
+            if (assignmentMeta.lengthMode === 'pages') {
+                assignmentMeta.requestedPages = normalizeNumber(assignmentMeta.requestedPages, 3);
+                assignmentMeta.targetWords = Math.round(assignmentMeta.requestedPages * WORDS_PER_PAGE);
+            } else {
+                assignmentMeta.targetWords = normalizeNumber(assignmentMeta.targetWords, WORDS_PER_PAGE * 3);
+            }
+        };
+        const saveCareerValue = (career) => {
+            const cleanCareer = (career || '').trim();
+            if (!cleanCareer) return false;
+            careerForm.career = cleanCareer;
+            assignmentMeta.career = cleanCareer;
+            localStorage.setItem(CAREER_STORAGE_KEY, cleanCareer);
+            return true;
+        };
+        const requireCareerBeforeDashboard = (nextState = 'ASSIGNMENT_DECODER') => {
+            loadHistory();
+            const storedCareer = localStorage.getItem(CAREER_STORAGE_KEY) || '';
+            if (storedCareer.trim()) {
+                saveCareerValue(storedCareer);
+                appState.value = nextState;
+                return;
+            }
+            pendingCareerNextState.value = nextState;
+            appState.value = 'CAREER_SETUP';
+        };
+        const saveCareerAndContinue = () => {
+            if (!saveCareerValue(careerForm.career)) {
+                errorMsg.value = 'Add your career or major to continue.';
+                triggerShake();
+                return;
+            }
+            errorMsg.value = '';
+            diagnostics.info('career.saved', {
+                careerPresent: true
+            });
+            appState.value = pendingCareerNextState.value || 'ASSIGNMENT_DECODER';
+        };
+        const saveAssignmentCareer = () => {
+            if (assignmentMeta.career?.trim()) {
+                saveCareerValue(assignmentMeta.career);
+            }
+        };
+        const setRequestedPages = (value) => {
+            assignmentMeta.requestedPages = Math.max(1, Math.round(normalizeNumber(value, 1)));
+            syncTargetWords();
+        };
+        const adjustRequestedPages = (delta) => setRequestedPages((Number(assignmentMeta.requestedPages) || 1) + delta);
+        const getCitationLabel = (value) => {
+            const option = citationOptions.find(item => item.value === value);
+            return option?.label || 'Custom';
+        };
+        const getLengthInstruction = () => {
+            syncTargetWords();
+            if (assignmentMeta.lengthMode === 'pages') {
+                return `${assignmentMeta.requestedPages} page(s), approximately ${assignmentMeta.targetWords} words.`;
+            }
+            return `Approximately ${assignmentMeta.targetWords} words.`;
+        };
+        const getCitationInstruction = () => {
+            if (!assignmentMeta.citationRequired || assignmentMeta.citationStyle === 'none') {
+                return 'No formal citation style is required unless the user details explicitly ask for one.';
+            }
+            const customDetails = assignmentMeta.citationInstructions?.trim()
+                ? ` Extra citation instructions: ${assignmentMeta.citationInstructions.trim()}`
+                : '';
+            return `Use ${getCitationLabel(assignmentMeta.citationStyle)} citation style.${customDetails} Cite uploaded/source material when available. Since this app does not perform live web research, do not invent page numbers or obscure source details; if a citation depends on model memory, make it conservative and verifiable.`;
+        };
+        const getGuidanceSummary = () => {
+            if (!guidanceFlow.questions.length) return 'No extra guidance questions were answered.';
+            const answers = guidanceFlow.questions.map((question) => {
+                const answer = guidanceFlow.answers[question.id] || {};
+                const customText = answer.customText?.trim();
+                if (answer.selectedOptionId === 'custom') {
+                    return `- ${question.question} Answer: ${customText || 'Custom answer selected, but no extra text was provided.'}`;
+                }
+                const selectedOption = question.options.find(option => option.id === answer.selectedOptionId);
+                const selectedValue = selectedOption?.value || selectedOption?.label || 'Recommended option';
+                return `- ${question.question} Answer: ${selectedValue}`;
+            });
+            return answers.join('\n');
+        };
+        const buildGenerationContext = () => ({
+            career: assignmentMeta.career?.trim() || 'General college student',
+            lengthInstruction: getLengthInstruction(),
+            citationInstruction: getCitationInstruction(),
+            guidanceInstruction: getGuidanceSummary()
+        });
+        const applyCollegePromptContext = (template) => {
+            const context = buildGenerationContext();
+            return template
+                .replace('{{COLLEGE_CONTEXT_RULES}}', PROMPTS.COLLEGE_CONTEXT_RULES || '')
+                .replace('{{CAREER}}', context.career)
+                .replace('{{LENGTH_INSTRUCTION}}', context.lengthInstruction)
+                .replace('{{CITATION_INSTRUCTION}}', context.citationInstruction)
+                .replace('{{GUIDANCE_ANSWERS}}', context.guidanceInstruction);
+        };
+        const buildUserPrompt = () => {
+            const userPromptTemplate = homeworkType.value === 'math' ? PROMPTS.HOMEWORK_MATH : PROMPTS.HOMEWORK_TEXT;
+            return applyCollegePromptContext(userPromptTemplate)
+                .replace('{{TASK_TYPE}}', homeworkForm.taskType || 'General Task')
+                .replace('{{TOPIC}}', homeworkForm.topic)
+                .replace('{{SUBJECT}}', homeworkForm.subject || 'General')
+                .replace('{{DETAILS}}', homeworkForm.details || 'None');
+        };
+        const resetGuidanceForDraft = () => {
+            guidanceFlow.questions = [];
+            guidanceFlow.answers = {};
+            guidanceFlow.wasShownForCurrentDraft = false;
+        };
+        const buildAssignmentDecoderPrompt = () => {
+            const text = decoderForm.assignmentText?.trim() || 'The assignment instructions are provided in the uploaded files.';
+            return PROMPTS.ASSIGNMENT_DECODER
+                .replace('{{ASSIGNMENT_TEXT}}', text)
+                .replace('{{CAREER}}', assignmentMeta.career || 'General college student')
+                .replace('{{FILE_COUNT}}', String(decoderForm.files.length));
+        };
+
+        const buildGuidanceQuestionsPrompt = () => {
+            const context = buildGenerationContext();
+            return PROMPTS.GUIDANCE_QUESTIONS
+                .replace('{{HOMEWORK_TYPE}}', homeworkType.value)
+                .replace('{{TASK_TYPE}}', homeworkForm.taskType || 'General Task')
+                .replace('{{TOPIC}}', homeworkForm.topic)
+                .replace('{{SUBJECT}}', homeworkForm.subject || 'General')
+                .replace('{{DETAILS}}', homeworkForm.details || 'None')
+                .replace('{{CAREER}}', context.career)
+                .replace('{{LENGTH_INSTRUCTION}}', context.lengthInstruction)
+                .replace('{{CITATION_INSTRUCTION}}', context.citationInstruction);
+        };
 
         const toggleSidebar = () => {
             isSidebarOpen.value = !isSidebarOpen.value;
@@ -657,8 +953,7 @@ const app = createApp({
         const checkStyleProfile = () => {
             const style = localStorage.getItem('scriptoria_style_profile');
             if (style) {
-                appState.value = 'DASHBOARD';
-                loadHistory();
+                requireCareerBeforeDashboard('ASSIGNMENT_DECODER');
             } else {
                 appState.value = 'SETUP_STYLE';
             }
@@ -686,11 +981,50 @@ const app = createApp({
 
         const buildPreviewUserPrompt = (previewCase) => {
             const userPromptTemplate = previewCase.type === 'math' ? PROMPTS.HOMEWORK_MATH : PROMPTS.HOMEWORK_TEXT;
-            return userPromptTemplate
+            return applyCollegePromptContext(userPromptTemplate)
                 .replace('{{TASK_TYPE}}', previewCase.taskType || 'General Task')
                 .replace('{{TOPIC}}', previewCase.topic)
                 .replace('{{SUBJECT}}', previewCase.subject || 'General')
                 .replace('{{DETAILS}}', previewCase.details || 'None');
+        };
+
+        const generateStylePreview = async (previewCase, systemPrompt) => {
+            const userPrompt = buildPreviewUserPrompt(previewCase);
+            const attempts = [
+                { label: 'standard', options: { feature: 'style_preview', retryStage: 'style preview', context: { previewId: previewCase.id } } },
+                { label: 'lite_empty_retry', options: { feature: 'style_preview', retryStage: 'style preview', preferredModel: FALLBACK_GEMINI_MODEL, allowFallback: false, context: { previewId: previewCase.id } } }
+            ];
+
+            for (const attempt of attempts) {
+                generatedContent.value = '';
+                thoughtLog.value = [];
+                const result = await callGeminiStream(userPrompt, systemPrompt, [], null, attempt.options);
+                const output = generatedContent.value.trim();
+
+                if (output) {
+                    diagnostics.info('style_preview.complete', {
+                        previewId: previewCase.id,
+                        attempt: attempt.label,
+                        requestId: result.requestId,
+                        model: result.model,
+                        outputLength: output.length,
+                        textChunkCount: result.textChunkCount,
+                        thoughtChunkCount: result.thoughtChunkCount
+                    });
+                    return generatedContent.value;
+                }
+
+                diagnostics.warn('style_preview.empty_output', {
+                    previewId: previewCase.id,
+                    attempt: attempt.label,
+                    requestId: result.requestId,
+                    model: result.model,
+                    streamEventCount: result.streamEventCount,
+                    thoughtChunkCount: result.thoughtChunkCount
+                });
+            }
+
+            throw new Error(`Style preview generated empty output for ${previewCase.label}.`);
         };
 
         const prepareStyleValidationPreviews = async () => {
@@ -705,12 +1039,8 @@ const app = createApp({
 
             for (let index = 0; index < styleValidationCases.length; index++) {
                 const previewCase = styleValidationCases[index];
-                generatedContent.value = '';
-                thoughtLog.value = [];
                 systemMessage.value = `Generating validation previews (${index + 1}/${styleValidationCases.length})...`;
-                const userPrompt = buildPreviewUserPrompt(previewCase);
-                await callGeminiStream(userPrompt, systemPrompt, []);
-                styleReview.previews[previewCase.id] = generatedContent.value;
+                styleReview.previews[previewCase.id] = await generateStylePreview(previewCase, systemPrompt);
             }
 
             styleReview.isPreparing = false;
@@ -723,8 +1053,7 @@ const app = createApp({
         };
 
         const acceptStyleAndContinue = () => {
-            appState.value = 'DASHBOARD';
-            loadHistory();
+            requireCareerBeforeDashboard('ASSIGNMENT_DECODER');
         };
 
         const retryStyleTraining = () => {
@@ -738,6 +1067,168 @@ const app = createApp({
             appState.value = 'SETUP_STYLE';
         };
 
+        const goToManualEntry = () => { decoderNotice.value = ''; appState.value = 'DASHBOARD'; };
+        const openAssignmentDecoder = () => {
+            decoderNotice.value = '';
+            isSidebarOpen.value = false;
+            appState.value = 'ASSIGNMENT_DECODER';
+        };
+
+        const applyDecodedAssignment = (decoded) => {
+            homeworkType.value = decoded.homeworkType === 'math' ? 'math' : 'text';
+            homeworkForm.topic = decoded.topic || '';
+            homeworkForm.subject = decoded.subject || '';
+            homeworkForm.taskType = decoded.taskType || '';
+            homeworkForm.details = decoded.details || '';
+            homeworkForm.files = [...decoderForm.files];
+            const recommendedPages = normalizeNumber(decoded.recommendedPages, assignmentMeta.requestedPages || 3);
+            assignmentMeta.lengthMode = 'pages';
+            assignmentMeta.requestedPages = Math.max(1, Math.round(recommendedPages));
+            syncTargetWords();
+            assignmentMeta.citationRequired = !!decoded.citationRequired;
+            assignmentMeta.citationStyle = decoded.citationStyle || 'none';
+            if (!assignmentMeta.citationRequired) {
+                assignmentMeta.citationStyle = 'none';
+            }
+            resetGuidanceForDraft();
+            decoderNotice.value = `Assignment decoded with ${decoded.confidence || 'medium'} confidence. Review the fields, adjust anything your professor expects, then generate.`;
+            appState.value = 'DASHBOARD';
+        };
+
+        const decodeAssignment = async () => {
+            if (!decoderForm.assignmentText.trim() && decoderForm.files.length === 0) {
+                errorMsg.value = 'Paste the assignment instructions or upload the assignment file.';
+                triggerShake();
+                return;
+            }
+            if (!validateSupportedFiles(decoderForm.files, 'assignment decoder')) return;
+            clearLastError();
+            errorMsg.value = '';
+            appState.value = 'GENERATING';
+            systemMessage.value = 'Reading the assignment brief...';
+            thoughtLog.value = [{ text: 'Extracting university-level requirements...', isThought: true }];
+            diagnostics.info('assignment.decode.start', {
+                fileCount: decoderForm.files.length,
+                hasText: !!decoderForm.assignmentText.trim(),
+                careerPresent: !!assignmentMeta.career?.trim()
+            });
+
+            try {
+                const decoded = await callGeminiStructuredStream(
+                    buildAssignmentDecoderPrompt(),
+                    assignmentDecoderSchema,
+                    {
+                        feature: 'assignment_decoder',
+                        preferredModel: FALLBACK_GEMINI_MODEL,
+                        allowFallback: false,
+                        thinkingLevel: 'high',
+                        files: decoderForm.files,
+                        retryStage: 'assignment decoder'
+                    }
+                );
+                diagnostics.info('assignment.decode.complete', {
+                    homeworkType: decoded?.homeworkType || null,
+                    citationRequired: !!decoded?.citationRequired,
+                    citationStyle: decoded?.citationStyle || null,
+                    recommendedPages: decoded?.recommendedPages || null,
+                    confidence: decoded?.confidence || null,
+                    missingInfoCount: Array.isArray(decoded?.missingInfo) ? decoded.missingInfo.length : 0
+                });
+                applyDecodedAssignment(decoded || {});
+            } catch (error) {
+                diagnostics.error('assignment.decode.failed', {
+                    message: error?.message || String(error),
+                    requestId: error?.requestId || null,
+                    fileCount: decoderForm.files.length
+                });
+                setUserVisibleError(error, 'assignment decoder');
+                appState.value = 'ASSIGNMENT_DECODER';
+            }
+        };
+
+        const shouldShowGuidanceQuestions = () => {
+            if (guidanceFlow.wasShownForCurrentDraft) return false;
+            return guidanceQuestionsEnabled.value;
+        };
+
+        const selectGuidanceOption = (questionId, optionId) => {
+            const current = guidanceFlow.answers[questionId] || {};
+            guidanceFlow.answers[questionId] = {
+                ...current,
+                selectedOptionId: optionId
+            };
+        };
+        const selectGuidanceCustomOption = (questionId) => selectGuidanceOption(questionId, 'custom');
+        const setGuidanceCustomText = (questionId, value) => {
+            const current = guidanceFlow.answers[questionId] || {};
+            guidanceFlow.answers[questionId] = {
+                ...current,
+                selectedOptionId: 'custom',
+                customText: value
+            };
+        };
+
+        const prepareGuidanceQuestions = async () => {
+            clearLastError();
+            appState.value = 'GENERATING';
+            systemMessage.value = 'Preparing three high-leverage questions...';
+            thoughtLog.value = [{ text: 'Finding the choices most likely to make this sound specific...', isThought: true }];
+            guidanceFlow.isPreparing = true;
+            diagnostics.info('guidance.questions.start', {
+                homeworkType: homeworkType.value,
+                careerPresent: !!assignmentMeta.career?.trim(),
+                requestedPages: assignmentMeta.lengthMode === 'pages' ? assignmentMeta.requestedPages : null,
+                targetWords: assignmentMeta.targetWords
+            });
+
+            try {
+                const result = await callGeminiStructuredStream(
+                    buildGuidanceQuestionsPrompt(),
+                    guidanceQuestionsSchema,
+                    {
+                        feature: 'guidance_questions',
+                        preferredModel: FALLBACK_GEMINI_MODEL,
+                        allowFallback: false,
+                        thinkingLevel: 'high',
+                        retryStage: 'guidance questions'
+                    }
+                );
+
+                const questions = Array.isArray(result?.questions) ? result.questions.slice(0, 3) : [];
+                if (questions.length === 0) throw new Error('No guidance questions were generated.');
+
+                guidanceFlow.questions = questions;
+                guidanceFlow.answers = {};
+                questions.forEach((question) => {
+                    const recommended = question.options.find(option => option.id === question.recommendedOptionId) || question.options[0];
+                    guidanceFlow.answers[question.id] = {
+                        selectedOptionId: recommended?.id || '',
+                        customText: ''
+                    };
+                });
+
+                diagnostics.info('guidance.questions.complete', {
+                    questionCount: guidanceFlow.questions.length
+                });
+
+                appState.value = 'QUESTION_GUIDANCE';
+            } catch (error) {
+                diagnostics.error('guidance.questions.failed', {
+                    message: error?.message || String(error),
+                    requestId: error?.requestId || null
+                });
+                setUserVisibleError(error, 'guidance questions');
+                appState.value = 'DASHBOARD';
+            } finally {
+                guidanceFlow.isPreparing = false;
+            }
+        };
+
+        const acceptGuidanceAndGenerate = async () => {
+            guidanceFlow.wasShownForCurrentDraft = true;
+            await runHomeworkGeneration();
+        };
+
         // --- API Helpers ---
 
         const getApiKey = () => {
@@ -746,11 +1237,26 @@ const app = createApp({
             return key;
         };
 
-        // 1. Structured Output Call with Streaming (Gemini 2.5 Pro for Style Analysis)
-        const callGeminiStructuredStream = async (userPrompt, schema) => {
+        // 1. Structured Output Call with Streaming
+        const callGeminiStructuredStream = async (userPrompt, schema, options = {}) => {
             const apiKey = getApiKey();
+            const feature = options.feature || 'style_analysis';
+            const streamType = options.streamType || 'structured';
+            const thinkingLevel = options.thinkingLevel || 'high';
+            const files = options.files || [];
+            const parts = [{ text: userPrompt }];
+
+            files.forEach(file => {
+                parts.push({
+                    inline_data: {
+                        mime_type: file.mimeType,
+                        data: file.data.split(',')[1]
+                    }
+                });
+            });
+
             const payload = {
-                contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+                contents: [{ role: 'user', parts }],
                 generationConfig: {
                     responseMimeType: "application/json",
                     responseJsonSchema: schema,
@@ -759,7 +1265,7 @@ const app = createApp({
                     maxOutputTokens: 60000,
                     thinkingConfig: {
                         includeThoughts: true,
-                        thinkingLevel: "high"
+                        thinkingLevel
                     }
                 }
             };
@@ -767,9 +1273,10 @@ const app = createApp({
             const attemptModelRequest = async (model) => {
                 let jsonAccumulator = '';
                 const { response, requestId } = await fetchWithDiagnostics(buildGeminiStreamUrl(apiKey, model), payload, {
-                    feature: 'style_analysis',
-                    streamType: 'structured',
-                    model
+                    feature,
+                    streamType,
+                    model,
+                    fileCount: files.length
                 });
 
                 const streamSummary = await readSseStream(response, (data) => {
@@ -790,11 +1297,12 @@ const app = createApp({
                             jsonAccumulator += part.text;
                         }
                     }
-                }, { requestId, feature: 'style_analysis', model });
+                }, { requestId, feature, model });
 
                 diagnostics.info('structured.stream_complete', {
                     requestId,
                     model,
+                    feature,
                     eventCount: streamSummary.eventCount,
                     jsonLength: jsonAccumulator.length
                 });
@@ -805,6 +1313,7 @@ const app = createApp({
                     diagnostics.error('structured.json_parse_failed', {
                         requestId,
                         model,
+                        feature,
                         message: parseError?.message || String(parseError),
                         jsonPreview: jsonAccumulator
                     });
@@ -815,49 +1324,80 @@ const app = createApp({
                 }
             };
 
-            try {
-                return await attemptModelRequest(PRIMARY_GEMINI_MODEL);
-            } catch (primaryError) {
-                if (!isModelAvailabilityError(primaryError)) throw primaryError;
+            const initialModel = options.preferredModel || PRIMARY_GEMINI_MODEL;
+            const fallbackModel = options.fallbackModel || FALLBACK_GEMINI_MODEL;
+            const allowFallback = options.allowFallback !== false && initialModel !== fallbackModel;
+            const retryStage = options.retryStage || feature.replace(/_/g, ' ');
 
-                diagnostics.warn('model.fallback_triggered', {
-                    feature: 'style_analysis',
-                    fromModel: PRIMARY_GEMINI_MODEL,
-                    toModel: FALLBACK_GEMINI_MODEL,
+            try {
+                return await attemptModelRequest(initialModel);
+            } catch (primaryError) {
+                const canFallbackForStructuredParse = allowFallback && primaryError?.errorStage === 'finalize';
+                if (!isModelAvailabilityError(primaryError) && !canFallbackForStructuredParse) throw primaryError;
+
+                if (allowFallback) {
+                    diagnostics.warn('model.fallback_triggered', {
+                        feature,
+                        fromModel: initialModel,
+                        toModel: fallbackModel,
+                        reason: primaryError.message,
+                        errorStage: primaryError.errorStage || null
+                    });
+
+                    try {
+                        return await attemptModelRequest(fallbackModel);
+                    } catch (fallbackError) {
+                        if (!isModelAvailabilityError(fallbackError)) throw fallbackError;
+
+                        diagnostics.warn('model.retry_scheduled', {
+                            feature,
+                            model: fallbackModel,
+                            delayMs: FALLBACK_RETRY_DELAY_MS,
+                            reason: fallbackError.message
+                        });
+                        systemMessage.value = 'Google API is under high demand. Retrying automatically in 30 seconds...';
+                        lastError.value = {
+                            supportId: generateDiagnosticId('support'),
+                            stage: retryStage,
+                            message: createRetryScheduledError(fallbackError).message,
+                            requestId: fallbackError.requestId || null,
+                            status: fallbackError.status || null,
+                            statusText: fallbackError.statusText || null
+                        };
+                        await wait(FALLBACK_RETRY_DELAY_MS);
+                        clearLastError();
+                        systemMessage.value = 'Retrying with fallback model...';
+                        return await attemptModelRequest(fallbackModel);
+                    }
+                }
+
+                diagnostics.warn('model.retry_scheduled', {
+                    feature,
+                    model: initialModel,
+                    delayMs: FALLBACK_RETRY_DELAY_MS,
                     reason: primaryError.message
                 });
-
-                try {
-                    return await attemptModelRequest(FALLBACK_GEMINI_MODEL);
-                } catch (fallbackError) {
-                    if (!isModelAvailabilityError(fallbackError)) throw fallbackError;
-
-                    diagnostics.warn('model.retry_scheduled', {
-                        feature: 'style_analysis',
-                        model: FALLBACK_GEMINI_MODEL,
-                        delayMs: FALLBACK_RETRY_DELAY_MS,
-                        reason: fallbackError.message
-                    });
-                    systemMessage.value = 'Google API is under high demand. Retrying automatically in 30 seconds...';
-                    lastError.value = {
-                        supportId: generateDiagnosticId('support'),
-                        stage: 'style setup',
-                        message: createRetryScheduledError(fallbackError).message,
-                        requestId: fallbackError.requestId || null,
-                        status: fallbackError.status || null,
-                        statusText: fallbackError.statusText || null
-                    };
-                    await wait(FALLBACK_RETRY_DELAY_MS);
-                    clearLastError();
-                    systemMessage.value = 'Retrying with fallback model...';
-                    return await attemptModelRequest(FALLBACK_GEMINI_MODEL);
-                }
+                systemMessage.value = 'Google API is under high demand. Retrying automatically in 30 seconds...';
+                lastError.value = {
+                    supportId: generateDiagnosticId('support'),
+                    stage: retryStage,
+                    message: createRetryScheduledError(primaryError).message,
+                    requestId: primaryError.requestId || null,
+                    status: primaryError.status || null,
+                    statusText: primaryError.statusText || null
+                };
+                await wait(FALLBACK_RETRY_DELAY_MS);
+                clearLastError();
+                systemMessage.value = 'Retrying with stable Flash-Lite model...';
+                return await attemptModelRequest(initialModel);
             }
         };
 
         // 2. Streaming Call with Thinking
-        const callGeminiStream = async (userPrompt, systemPrompt, files = [], history = null) => {
+        const callGeminiStream = async (userPrompt, systemPrompt, files = [], history = null, options = {}) => {
             const apiKey = getApiKey();
+            const feature = options.feature || (history ? 'humanize' : 'homework');
+            const retryStage = options.retryStage || (history ? 'humanization' : 'homework generation');
 
             let contents;
             if (history) {
@@ -892,11 +1432,12 @@ const app = createApp({
 
             const attemptModelRequest = async (model) => {
                 const { response, requestId } = await fetchWithDiagnostics(buildGeminiStreamUrl(apiKey, model), payload, {
-                    feature: history ? 'humanize' : 'homework',
+                    feature,
                     streamType: 'text',
                     fileCount: files.length,
                     usingHistory: !!history,
-                    model
+                    model,
+                    ...(options.context || {})
                 });
 
                 let textChunkCount = 0;
@@ -923,46 +1464,103 @@ const app = createApp({
                     }
                 }, {
                     requestId,
-                    feature: history ? 'humanize' : 'homework',
-                    model
+                    feature,
+                    model,
+                    ...(options.context || {})
                 });
 
-                return {
+                const result = {
                     requestId,
                     streamEventCount: streamSummary.eventCount,
                     textChunkCount,
                     thoughtChunkCount,
                     model
                 };
+
+                if (options.requireVisibleOutput && !generatedContent.value.trim()) {
+                    diagnostics.warn('stream.empty_output', {
+                        requestId,
+                        feature,
+                        model,
+                        streamEventCount: streamSummary.eventCount,
+                        textChunkCount,
+                        thoughtChunkCount,
+                        ...(options.context || {})
+                    });
+                    const error = new Error('Gemini completed the request without returning visible content.');
+                    error.requestId = requestId;
+                    error.errorStage = 'empty_output';
+                    error.retryableEmptyOutput = true;
+                    error.model = model;
+                    throw error;
+                }
+
+                return result;
+            };
+
+            const initialModel = options.preferredModel || PRIMARY_GEMINI_MODEL;
+            const fallbackModel = options.fallbackModel || FALLBACK_GEMINI_MODEL;
+            const allowFallback = options.allowFallback !== false && initialModel !== fallbackModel;
+            const isRetryableStreamFailure = (error) =>
+                isModelAvailabilityError(error) || error?.retryableEmptyOutput === true;
+            const resetEmptyAttempt = (error) => {
+                if (!error?.retryableEmptyOutput) return;
+                generatedContent.value = '';
+                thoughtLog.value = [];
+                lastSignature.value = null;
             };
 
             try {
-                return await attemptModelRequest(PRIMARY_GEMINI_MODEL);
+                return await attemptModelRequest(initialModel);
             } catch (primaryError) {
-                if (!isModelAvailabilityError(primaryError)) throw primaryError;
+                if (!isRetryableStreamFailure(primaryError)) throw primaryError;
+                resetEmptyAttempt(primaryError);
+
+                if (!allowFallback) {
+                    diagnostics.warn('model.retry_scheduled', {
+                        feature,
+                        model: initialModel,
+                        delayMs: FALLBACK_RETRY_DELAY_MS,
+                        reason: primaryError.message
+                    });
+                    systemMessage.value = 'Google API is under high demand. Retrying automatically in 30 seconds...';
+                    lastError.value = {
+                        supportId: generateDiagnosticId('support'),
+                        stage: retryStage,
+                        message: createRetryScheduledError(primaryError).message,
+                        requestId: primaryError.requestId || null,
+                        status: primaryError.status || null,
+                        statusText: primaryError.statusText || null
+                    };
+                    await wait(FALLBACK_RETRY_DELAY_MS);
+                    clearLastError();
+                    systemMessage.value = 'Retrying with stable Flash-Lite model...';
+                    return await attemptModelRequest(initialModel);
+                }
 
                 diagnostics.warn('model.fallback_triggered', {
-                    feature: history ? 'humanize' : 'homework',
-                    fromModel: PRIMARY_GEMINI_MODEL,
-                    toModel: FALLBACK_GEMINI_MODEL,
+                    feature,
+                    fromModel: initialModel,
+                    toModel: fallbackModel,
                     reason: primaryError.message
                 });
 
                 try {
-                    return await attemptModelRequest(FALLBACK_GEMINI_MODEL);
+                    return await attemptModelRequest(fallbackModel);
                 } catch (fallbackError) {
-                    if (!isModelAvailabilityError(fallbackError)) throw fallbackError;
+                    if (!isRetryableStreamFailure(fallbackError)) throw fallbackError;
+                    resetEmptyAttempt(fallbackError);
 
                     diagnostics.warn('model.retry_scheduled', {
-                        feature: history ? 'humanize' : 'homework',
-                        model: FALLBACK_GEMINI_MODEL,
+                        feature,
+                        model: fallbackModel,
                         delayMs: FALLBACK_RETRY_DELAY_MS,
                         reason: fallbackError.message
                     });
                     systemMessage.value = 'Google API is under high demand. Retrying automatically in 30 seconds...';
                     lastError.value = {
                         supportId: generateDiagnosticId('support'),
-                        stage: history ? 'humanization' : 'homework generation',
+                        stage: retryStage,
                         message: createRetryScheduledError(fallbackError).message,
                         requestId: fallbackError.requestId || null,
                         status: fallbackError.status || null,
@@ -971,7 +1569,7 @@ const app = createApp({
                     await wait(FALLBACK_RETRY_DELAY_MS);
                     clearLastError();
                     systemMessage.value = 'Retrying with fallback model...';
-                    return await attemptModelRequest(FALLBACK_GEMINI_MODEL);
+                    return await attemptModelRequest(fallbackModel);
                 }
             }
         };
@@ -1017,7 +1615,31 @@ const app = createApp({
             }
         };
 
-        const generateHomework = async () => {
+        const requestHomeworkGeneration = async () => {
+            if (!homeworkForm.topic.trim()) {
+                triggerShake();
+                return;
+            }
+
+            syncTargetWords();
+            if (!assignmentMeta.career?.trim()) {
+                pendingCareerNextState.value = 'DASHBOARD';
+                appState.value = 'CAREER_SETUP';
+                return;
+            }
+            saveAssignmentCareer();
+
+            if (shouldShowGuidanceQuestions()) {
+                await prepareGuidanceQuestions();
+                return;
+            }
+
+            await runHomeworkGeneration();
+        };
+
+        const generateHomework = requestHomeworkGeneration;
+
+        const runHomeworkGeneration = async () => {
             if (!homeworkForm.topic.trim()) {
                 triggerShake();
                 return;
@@ -1038,19 +1660,21 @@ const app = createApp({
             diagnostics.info('generation.start', {
                 attemptNumber,
                 homeworkType: homeworkType.value,
-                fileCount: homeworkForm.files.length
+                fileCount: homeworkForm.files.length,
+                careerPresent: !!assignmentMeta.career?.trim(),
+                lengthMode: assignmentMeta.lengthMode,
+                targetWords: assignmentMeta.targetWords,
+                citationRequired: !!assignmentMeta.citationRequired,
+                guidanceQuestionCount: guidanceFlow.questions.length
             });
 
-            const unsupportedFiles = homeworkForm.files.filter(file => !file.mimeType || !SUPPORTED_INLINE_MIME_TYPES.has(file.mimeType));
-            if (unsupportedFiles.length > 0) {
-                const error = new Error(`Unsupported file type: ${unsupportedFiles[0].name}. Use PNG, JPG, WEBP, HEIC, HEIF, PDF, or TXT.`);
+            if (!validateSupportedFiles(homeworkForm.files, 'homework generation')) {
                 pushGenerationAttempt({
                     attemptNumber,
                     status: 'blocked',
                     reason: 'unsupported_file_type',
                     errorStage: 'upload'
                 });
-                setUserVisibleError(error, 'homework generation');
                 appState.value = 'DASHBOARD';
                 return;
             }
@@ -1058,16 +1682,14 @@ const app = createApp({
             try {
                 const styleProfile = localStorage.getItem('scriptoria_style_profile') || 'Standard academic tone.';
                 const systemPrompt = PROMPTS.SYSTEM.replace('{{STYLE_PROFILE}}', styleProfile);
-
-                let userPromptTemplate = homeworkType.value === 'math' ? PROMPTS.HOMEWORK_MATH : PROMPTS.HOMEWORK_TEXT;
-                const userPrompt = userPromptTemplate
-                    .replace('{{TASK_TYPE}}', homeworkForm.taskType || 'General Task')
-                    .replace('{{TOPIC}}', homeworkForm.topic)
-                    .replace('{{SUBJECT}}', homeworkForm.subject || 'General')
-                    .replace('{{DETAILS}}', homeworkForm.details || 'None');
+                const userPrompt = buildUserPrompt();
 
                 // Use Streaming with Thinking
-                const result = await callGeminiStream(userPrompt, systemPrompt, homeworkForm.files);
+                const result = await callGeminiStream(userPrompt, systemPrompt, homeworkForm.files, null, {
+                    feature: 'assignment_generation',
+                    retryStage: 'assignment generation',
+                    requireVisibleOutput: true
+                });
                 const durationMs = Math.round(performance.now() - attemptStartedAt);
                 const outputLength = generatedContent.value.length;
                 const hadVisibleContent = outputLength > 0;
@@ -1286,7 +1908,7 @@ const app = createApp({
             }
         };
 
-        const handleFileUpload = (event) => {
+        const addFilesToCollection = (event, targetCollection, diagnosticFeature = 'homework') => {
             const files = event.target.files || event.dataTransfer.files;
             if (!files || files.length === 0) return;
 
@@ -1304,7 +1926,7 @@ const app = createApp({
 
                 const reader = new FileReader();
                 reader.onload = (e) => {
-                    homeworkForm.files.push({
+                    targetCollection.push({
                         name: file.name,
                         type: file.type,
                         mimeType,
@@ -1312,6 +1934,7 @@ const app = createApp({
                         data: e.target.result // Base64
                     });
                     diagnostics.info('file.uploaded', {
+                        feature: diagnosticFeature,
                         fileName: file.name,
                         mimeType,
                         size: file.size || null
@@ -1325,10 +1948,28 @@ const app = createApp({
             }
         };
 
+        const handleFileUpload = (event) => {
+            addFilesToCollection(event, homeworkForm.files, 'homework');
+        };
+
+        const handleDecoderFileUpload = (event) => {
+            addFilesToCollection(event, decoderForm.files, 'assignment_decoder');
+        };
+
         const removeFile = (index) => {
             const removedFile = homeworkForm.files[index];
             homeworkForm.files.splice(index, 1);
             diagnostics.info('file.removed', {
+                feature: 'homework',
+                fileName: removedFile?.name || 'unknown'
+            });
+        };
+
+        const removeDecoderFile = (index) => {
+            const removedFile = decoderForm.files[index];
+            decoderForm.files.splice(index, 1);
+            diagnostics.info('file.removed', {
+                feature: 'assignment_decoder',
                 fileName: removedFile?.name || 'unknown'
             });
         };
@@ -1355,6 +1996,31 @@ const app = createApp({
             }
         });
 
+        watch(() => [
+            homeworkForm.topic,
+            homeworkForm.subject,
+            homeworkForm.taskType,
+            homeworkForm.details,
+            homeworkType.value,
+            assignmentMeta.career,
+            assignmentMeta.lengthMode,
+            assignmentMeta.requestedPages,
+            assignmentMeta.targetWords,
+            assignmentMeta.citationRequired,
+            assignmentMeta.citationStyle,
+            assignmentMeta.citationInstructions
+        ], () => {
+            if (appState.value === 'DASHBOARD') {
+                resetGuidanceForDraft();
+            }
+        });
+
+        watch(() => [assignmentMeta.lengthMode, assignmentMeta.requestedPages], () => {
+            if (assignmentMeta.lengthMode === 'pages') {
+                syncTargetWords();
+            }
+        });
+
         // --- Lifecycle ---
         onMounted(() => {
             installGlobalDiagnostics();
@@ -1377,6 +2043,7 @@ const app = createApp({
             isTermsModalOpen,
             lastError,
             hasGenerationAttempted,
+            decoderNotice,
             generatedContent,
             thoughtLog,
             thoughtLogContainer, // For auto-scroll
@@ -1399,6 +2066,26 @@ const app = createApp({
             selectStylePreview,
             acceptStyleAndContinue,
             retryStyleTraining,
+            // College workflow
+            careerForm,
+            assignmentMeta,
+            decoderForm,
+            guidanceFlow,
+            citationOptions,
+            guidanceQuestionsEnabled,
+            saveCareerAndContinue,
+            saveAssignmentCareer,
+            setRequestedPages,
+            adjustRequestedPages,
+            goToManualEntry,
+            openAssignmentDecoder,
+            decodeAssignment,
+            handleDecoderFileUpload,
+            removeDecoderFile,
+            selectGuidanceOption,
+            selectGuidanceCustomOption,
+            setGuidanceCustomText,
+            acceptGuidanceAndGenerate,
             // Dashboard
             homeworkType,
             homeworkForm,

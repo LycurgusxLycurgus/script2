@@ -85,6 +85,72 @@ CRITICAL RULES:
 5. Be invisible.
 `,
 
+    COLLEGE_CONTEXT_RULES: `
+COLLEGE / UNIVERSITY CONTEXT
+Career or major: {{CAREER}}
+Expected length: {{LENGTH_INSTRUCTION}}
+Citation requirement: {{CITATION_INSTRUCTION}}
+Student guidance choices:
+{{GUIDANCE_ANSWERS}}
+
+Use the career or major as a lens only when it genuinely improves the assignment. The work should feel like a student in that field wrote it, not like a generic expert wrote a detached textbook answer.
+`,
+
+    ASSIGNMENT_DECODER: `
+You are Scriptoria's assignment decoder for college and university work.
+
+TASK
+Read the assignment instructions below and any uploaded files. Extract the fields needed to pre-fill a manual assignment form. Return only JSON that matches the provided schema.
+
+ASSIGNMENT TEXT
+{{ASSIGNMENT_TEXT}}
+
+USER CAREER / MAJOR
+{{CAREER}}
+
+UPLOADED FILE COUNT
+{{FILE_COUNT}}
+
+DECODING RULES
+1. Decide whether the assignment is primarily "text" or "math".
+2. Convert professor-style instructions into concise form fields.
+3. Keep "details" practical: include deliverable requirements, constraints, rubric cues, source requirements, formatting expectations, and missing assumptions.
+4. Recommend page count only when the instructions imply length; otherwise choose a reasonable college default between 2 and 5.
+5. Detect citation requirements and citation style when present.
+6. Use "none" for citationStyle when citations are not required.
+7. Do not invent source names, due dates, professor names, or facts that are not present.
+8. If important information is missing, list it in missingInfo.
+
+NOTE: Make your decoding in the same language as the user.
+`,
+
+    GUIDANCE_QUESTIONS: `
+You generate the smallest useful set of pre-generation questions for a college assignment. Return only JSON matching the schema.
+
+ASSIGNMENT
+Assignment mode: {{HOMEWORK_TYPE}}
+Task type: {{TASK_TYPE}}
+Topic: {{TOPIC}}
+Subject: {{SUBJECT}}
+Details: {{DETAILS}}
+
+COLLEGE CONTEXT
+Career or major: {{CAREER}}
+Expected length: {{LENGTH_INSTRUCTION}}
+Citation requirement: {{CITATION_INSTRUCTION}}
+
+QUESTION RULES
+1. Generate 1 to 3 questions maximum.
+2. Every question must reduce generic output in a high-leverage way.
+3. Prefer questions about thesis/angle, disciplinary lens, evidence strategy, professor expectation, tone, or depth.
+4. Each question must include 2 or 3 options.
+5. One option must be the recommended default through recommendedOptionId.
+6. The recommended default should be safe if the student wants to click through quickly.
+7. Include a customPlaceholder so the student can override the options.
+8. Keep labels short and values specific enough to guide final writing.
+9. Do not ask for information already clearly available in the assignment.
+`,
+
     /**
      * Phase 5: Task Prompt
      * The actual homework request.
@@ -96,6 +162,8 @@ Topic: {{TOPIC}}
 Subject: {{SUBJECT}}
 Context/Details: {{DETAILS}}
 
+{{COLLEGE_CONTEXT_RULES}}
+
 Output the result directly. No preamble.
 NOTE: If user asks for a multiturn task, only output the final text always, never output a preparatory turn as this app doesn't have multi-turn nor chat option for the user.
 `,
@@ -105,6 +173,8 @@ Solve the following math problem/task:
 Topic: {{TOPIC}}
 Subject: {{SUBJECT}}
 Details: {{DETAILS}}
+
+{{COLLEGE_CONTEXT_RULES}}
 
 INSTRUCTIONS:
 1. Show the step-by-step work clearly using PLAIN TEXT & LATEX ONLY (No Markdown; single $ dollar sign for inline math and double $$ dollar sign for block math).
